@@ -128,10 +128,11 @@ class HistogramTab:
     def show_histogram(self, tab_key: str) -> None:
         if tab_key not in self._hist_tabs:
             return
-        # hide others
+        # hide others (unconditionally, even if not currently mapped, so they don't
+        # reappear when _hist_container is re-packed after returning from the browser)
         for k, v in self._hist_tabs.items():
             c = v[0]
-            if k != tab_key and c.winfo_ismapped():
+            if k != tab_key:
                 c.pack_forget()
 
         container, renderer, obj = self._hist_tabs[tab_key]
