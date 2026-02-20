@@ -119,12 +119,28 @@ class HistogramPreviewRenderer:
         self._preview_label = preview_label
         self._current_obj = obj
 
-        # Re-render on window resize
+        # Re-render on window resize only — not on every internal widget repaint.
+        # Guard conditions:
+        #   1. Only react when the top-level window itself is the source of the
+        #      Configure event (child-widget repaints also fire this binding, e.g.
+        #      the PanedWindow sash moving after fit results are written, or the
+        #      fit preview label receiving a new image).
+        #   2. Only re-render when the outer dimensions actually changed (avoids
+        #      repeated renders when the window is merely focused/moved).
+        #   3. Route through _schedule_render() so concurrent renders are properly
+        #      debounced and cancelled via after_cancel.
         try:
             toplevel = preview_label.winfo_toplevel()
-            def _on_config(event):  # noqa: ANN001
+            _last_size: list[tuple[int, int]] = [(0, 0)]
+            def _on_config(event: tk.Event) -> None:  # type: ignore[type-arg]
                 try:
-                    self.render_preview(self._current_obj)
+                    if event.widget is not toplevel:
+                        return
+                    new_size = (toplevel.winfo_width(), toplevel.winfo_height())
+                    if new_size == _last_size[0]:
+                        return
+                    _last_size[0] = new_size
+                    self._schedule_render()
                 except Exception:
                     pass
             toplevel.bind("<Configure>", _on_config)
@@ -148,6 +164,14 @@ class HistogramPreviewRenderer:
             self._build_fit_panel(middle_bar)
         except Exception:
             pass
+
+        # Single save button — dedicated row, right-aligned, clearly visible
+        save_bar = ttk.Frame(controls_frame)
+        save_bar.pack(fill=tk.X, padx=4, pady=(2, 2))
+        ttk.Button(
+            save_bar, text="Save…",
+            command=lambda: self._open_save_dialog(),
+        ).pack(side=tk.RIGHT)
 
         bottom_sep = ttk.Separator(controls_frame, orient="horizontal")
         bottom_sep.pack(fill=tk.X, padx=4, pady=(2, 0))
@@ -275,10 +299,6 @@ class HistogramPreviewRenderer:
 
         self._reset_controls = _reset_controls
         ttk.Button(extras_frame, text="Reset", command=_reset_controls).pack(side=tk.LEFT)
-        ttk.Button(
-            extras_frame, text="Save",
-            command=lambda: self._open_save_dialog(),
-        ).pack(side=tk.LEFT, padx=(6, 0))
 
         # Auto-render on every keystroke / paste in any entry field
         def _on_any_change(*_):
@@ -623,8 +643,8 @@ class HistogramPreviewRenderer:
             return
         fit_id = self._fit_listbox_ids[idx]
 
-        if self._fit_module is not None:
-            self._fit_module.remove_fit(fit_id)
+        # Clean up UI state first so a mid-cleanup error does not leave the
+        # listbox and _fit_module out of sync.
         if fit_id in self._fit_frames:
             try:
                 self._fit_frames[fit_id].destroy()
@@ -636,6 +656,10 @@ class HistogramPreviewRenderer:
 
         self._fit_listbox.delete(idx)
         del self._fit_listbox_ids[idx]
+
+        # Remove from domain module after the UI is already consistent
+        if self._fit_module is not None:
+            self._fit_module.remove_fit(fit_id)
 
         new_count = self._fit_listbox.size()
         if new_count > 0:
@@ -710,10 +734,10 @@ class HistogramPreviewRenderer:
         ui_state["param_entries"] = []
         ui_state["param_fixed_vars"] = []
 
-        COLS_PER_ROW = 2
+        cols_per_row = 2
         for i, name in enumerate(param_names):
-            grid_row = i // COLS_PER_ROW
-            col_base = (i % COLS_PER_ROW) * 3
+            grid_row = i // cols_per_row
+            col_base = (i % cols_per_row) * 3
             ttk.Label(frame, text=f"{name}:").grid(
                 row=grid_row, column=col_base, sticky="e", padx=(4, 2), pady=(2, 1)
             )
@@ -957,14 +981,59 @@ class HistogramPreviewRenderer:
         tk.Label(frame, text="Formats:").grid(row=4, column=0, sticky="ne", **pad)
         fmt_frame = tk.Frame(frame)
         fmt_frame.grid(row=4, column=1, columnspan=2, sticky="w", **pad)
-        png_var  = tk.BooleanVar(value=True)
-        pdf_var  = tk.BooleanVar(value=True)
-        csv_var  = tk.BooleanVar(value=False)
-        json_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(fmt_frame, text="PNG (preview)",  variable=png_var).pack(anchor="w")
-        tk.Checkbutton(fmt_frame, text="PDF (preview)",  variable=pdf_var).pack(anchor="w")
-        tk.Checkbutton(fmt_frame, text="CSV (peaks)",    variable=csv_var).pack(anchor="w")
-        tk.Checkbutton(fmt_frame, text="JSON (peaks)",   variable=json_var).pack(anchor="w")
+
+        png_var        = tk.BooleanVar(value=True)
+        pdf_var        = tk.BooleanVar(value=True)
+        csv_peaks_var  = tk.BooleanVar(value=False)
+        csv_fits_var   = tk.BooleanVar(value=False)
+        json_peaks_var = tk.BooleanVar(value=False)
+        json_fits_var  = tk.BooleanVar(value=False)
+        fit_report_var = tk.BooleanVar(value=False)
+
+        tk.Checkbutton(fmt_frame, text="PNG (preview)",    variable=png_var).pack(anchor="w")
+        tk.Checkbutton(fmt_frame, text="PDF (preview)",    variable=pdf_var).pack(anchor="w")
+
+        # CSV row — peaks (independent) and fits (forces peaks on)
+        csv_row = tk.Frame(fmt_frame)
+        csv_row.pack(anchor="w")
+        csv_peaks_cb = tk.Checkbutton(csv_row, text="CSV (peaks)",
+                                      variable=csv_peaks_var)
+        csv_peaks_cb.pack(side=tk.LEFT)
+        tk.Checkbutton(
+            csv_row, text="+ fit results",
+            variable=csv_fits_var,
+            command=lambda: _on_fits_toggle(
+                csv_fits_var, csv_peaks_var, csv_peaks_cb
+            ),
+        ).pack(side=tk.LEFT, padx=(6, 0))
+
+        # JSON row — peaks (independent) and fits (forces peaks on)
+        json_row = tk.Frame(fmt_frame)
+        json_row.pack(anchor="w")
+        json_peaks_cb = tk.Checkbutton(json_row, text="JSON (peaks)",
+                                       variable=json_peaks_var)
+        json_peaks_cb.pack(side=tk.LEFT)
+        tk.Checkbutton(
+            json_row, text="+ fit results",
+            variable=json_fits_var,
+            command=lambda: _on_fits_toggle(
+                json_fits_var, json_peaks_var, json_peaks_cb
+            ),
+        ).pack(side=tk.LEFT, padx=(6, 0))
+
+        tk.Checkbutton(fmt_frame, text="PDF (fit report)", variable=fit_report_var).pack(anchor="w")
+
+        def _on_fits_toggle(
+            fits_var: tk.BooleanVar,
+            peaks_var: tk.BooleanVar,
+            peaks_cb: tk.Checkbutton,
+        ) -> None:
+            """When '+ fit results' is checked, force peaks on and lock it."""
+            if fits_var.get():
+                peaks_var.set(True)
+                peaks_cb.configure(state="disabled")
+            else:
+                peaks_cb.configure(state="normal")
 
         frame.columnconfigure(1, weight=1)
 
@@ -983,7 +1052,9 @@ class HistogramPreviewRenderer:
             if width < 100 or height < 100:
                 messagebox.showerror("Save", "Width and height must be ≥ 100 px.", parent=dialog)
                 return
-            if not any((png_var.get(), pdf_var.get(), csv_var.get(), json_var.get())):
+            if not any((png_var.get(), pdf_var.get(),
+                        csv_peaks_var.get(), json_peaks_var.get(),
+                        fit_report_var.get())):
                 messagebox.showerror("Save", "Select at least one output format.", parent=dialog)
                 return
 
@@ -1029,28 +1100,57 @@ class HistogramPreviewRenderer:
                 else None
             ) or None
 
-            if csv_var.get():
+            if csv_peaks_var.get():
                 if not peaks:
                     messagebox.showwarning("Save", "No peaks to export as CSV.", parent=dialog)
                 else:
                     try:
                         csv_path = os.path.join(directory, f"{name}_peaks.csv")
-                        save_mgr.export_peaks_csv(peaks, name, csv_path, fit_states=fit_states)
+                        # Pass fit_states only when the user explicitly requested fits
+                        save_mgr.export_peaks_csv(
+                            peaks, name, csv_path,
+                            fit_states=fit_states if csv_fits_var.get() else None,
+                        )
                         saved.append(csv_path)
                     except Exception as exc:
                         messagebox.showerror("Save", f"CSV export failed:\n{exc}", parent=dialog)
                         return
 
-            if json_var.get():
+            if json_peaks_var.get():
                 if not peaks:
                     messagebox.showwarning("Save", "No peaks to export as JSON.", parent=dialog)
                 else:
                     try:
                         json_path = os.path.join(directory, f"{name}_peaks.json")
-                        save_mgr.export_peaks_json(peaks, name, json_path, fit_states=fit_states)
+                        save_mgr.export_peaks_json(
+                            peaks, name, json_path,
+                            fit_states=fit_states if json_fits_var.get() else None,
+                        )
                         saved.append(json_path)
                     except Exception as exc:
                         messagebox.showerror("Save", f"JSON export failed:\n{exc}", parent=dialog)
+                        return
+
+            if fit_report_var.get():
+                has_fits = (
+                    fit_states is not None
+                    and any(s.get("has_fit") for s in fit_states.values())
+                )
+                if not has_fits:
+                    messagebox.showwarning(
+                        "Save", "No completed fits to include in the report.", parent=dialog
+                    )
+                else:
+                    try:
+                        report_path = save_mgr.export_fit_report_pdf(
+                            root, obj, fit_states, directory, name
+                        )
+                        if report_path:
+                            saved.append(report_path)
+                    except Exception as exc:
+                        messagebox.showerror(
+                            "Save", f"Fit report export failed:\n{exc}", parent=dialog
+                        )
                         return
 
             if saved:
