@@ -237,6 +237,10 @@ class FitModule:
     # Save
     # ------------------------------------------------------------------
 
+    def get_all_fit_states(self) -> dict[int, dict]:
+        """Return a shallow copy of all fit states keyed by fit_id."""
+        return dict(self._fit_states)
+
     def invoke_save(self, fit_id: int) -> None:
         """Fire the ``on_save`` callback with the state of *fit_id*."""
         state = self._fit_states.get(fit_id)

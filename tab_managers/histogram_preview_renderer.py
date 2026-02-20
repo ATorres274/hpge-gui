@@ -990,7 +990,7 @@ class HistogramPreviewRenderer:
             peaks = list(getattr(getattr(self, "_peak_finder", None), "peaks", []))
             # Collect completed fit states for combined export
             fit_states = (
-                dict(self._fit_module._fit_states)
+                self._fit_module.get_all_fit_states()
                 if self._fit_module is not None
                 else None
             ) or None
