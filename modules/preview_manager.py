@@ -215,4 +215,7 @@ class HistogramRenderer:
         if options.get("markers"):
             normalized["markers"] = options["markers"]
 
+        if options.get("manual_markers"):
+            normalized["manual_markers"] = options["manual_markers"]
+
         return normalized

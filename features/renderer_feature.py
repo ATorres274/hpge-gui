@@ -81,34 +81,45 @@ class RootRenderer:
                         render_obj.Draw()
 
                         try:
-                            markers = options.get("markers")
                             show_markers = options.get("show_markers", True)
-                            if markers and show_markers and hasattr(render_obj, "FindBin"):
-                                xs = array("d", [float(m) for m in markers])
-                                ys = array("d", [])
-                                for val in xs:
-                                    try:
-                                        bin_idx = render_obj.FindBin(val)
-                                        ys.append(float(render_obj.GetBinContent(bin_idx)))
-                                    except Exception:
-                                        ys.append(0.0)
-                                try:
-                                    poly = root.TPolyMarker(len(xs), xs, ys)
-                                    try:
-                                        poly.SetMarkerStyle(29)
-                                        poly.SetMarkerSize(3)
+                            if show_markers and hasattr(render_obj, "FindBin"):
+                                def _draw_markers(marker_list, style, size, color):
+                                    if not marker_list:
+                                        return
+                                    xs = array("d", [float(m) for m in marker_list])
+                                    ys = array("d", [])
+                                    for val in xs:
                                         try:
-                                            poly.SetMarkerColor(2)
+                                            bin_idx = render_obj.FindBin(val)
+                                            ys.append(float(render_obj.GetBinContent(bin_idx)))
+                                        except Exception:
+                                            ys.append(0.0)
+                                    try:
+                                        poly = root.TPolyMarker(len(xs), xs, ys)
+                                        try:
+                                            poly.SetMarkerStyle(style)
+                                            poly.SetMarkerSize(size)
+                                            try:
+                                                poly.SetMarkerColor(color)
+                                            except Exception:
+                                                pass
+                                        except Exception:
+                                            pass
+                                        try:
+                                            poly.Draw("P same")
                                         except Exception:
                                             pass
                                     except Exception:
                                         pass
-                                    try:
-                                        poly.Draw("P same")
-                                    except Exception:
-                                        pass
-                                except Exception:
-                                    pass
+
+                                # Automatic peaks: red five-pointed star (style 29)
+                                _draw_markers(
+                                    options.get("markers"), style=29, size=3, color=2
+                                )
+                                # Manual peaks: blue open circle (style 24)
+                                _draw_markers(
+                                    options.get("manual_markers"), style=24, size=2, color=4
+                                )
                                 try:
                                     canvas.Modified()
                                     canvas.Update()

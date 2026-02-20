@@ -41,8 +41,8 @@ class HistogramPreviewRenderer:
         self._fit_module: FitModule | None = None
         self._fit_frames: dict[int, ttk.Frame] = {}
         self._fit_ui_states: dict[int, dict] = {}
-        self._fit_dropdown_var: tk.StringVar | None = None
-        self._fit_dropdown: ttk.Combobox | None = None
+        self._fit_listbox: tk.Listbox | None = None
+        self._fit_listbox_ids: list[int] = []
         self._fit_container: ttk.Frame | None = None
         self._fit_preview_label: tk.Label | None = None
         self._fit_result_text: tk.Text | None = None
@@ -98,13 +98,24 @@ class HistogramPreviewRenderer:
 
         fit_area = ttk.Frame(preview_frame)
         fit_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        fit_result_text = tk.Text(fit_area, height=6, wrap=tk.WORD, state=tk.DISABLED)
-        fit_result_text.pack(fill=tk.X, padx=4, pady=(4, 0))
-        self._fit_result_text = fit_result_text
-        fit_preview_label = tk.Label(fit_area, text="No fit yet", bg="white", fg="gray")
-        fit_preview_label.pack(fill=tk.BOTH, expand=True)
-        self._fit_preview_label = fit_preview_label
 
+        fit_pane = ttk.PanedWindow(fit_area, orient=tk.VERTICAL)
+        fit_pane.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+
+        results_outer = ttk.Frame(fit_pane)
+        fit_result_text = tk.Text(results_outer, wrap=tk.WORD, state=tk.DISABLED)
+        _result_sb = ttk.Scrollbar(results_outer, orient="vertical",
+                                   command=fit_result_text.yview)
+        fit_result_text.configure(yscrollcommand=_result_sb.set)
+        _result_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        fit_result_text.pack(fill=tk.BOTH, expand=True, padx=(4, 0), pady=(4, 0))
+        fit_pane.add(results_outer, weight=3)
+
+        fit_preview_label = tk.Label(fit_pane, text="No fit yet", bg="white", fg="gray")
+        fit_pane.add(fit_preview_label, weight=1)
+
+        self._fit_result_text = fit_result_text
+        self._fit_preview_label = fit_preview_label
         self._preview_label = preview_label
         self._current_obj = obj
 
@@ -479,9 +490,10 @@ class HistogramPreviewRenderer:
             peak_controls, text="Clear",
             command=lambda: (self._peak_finder._clear_peaks(), self._schedule_render()),
         ).pack(side=tk.LEFT, padx=(0, 2))
-
-        # --- Search options row ---
-        self._build_peak_search_options(peak_panel, app)
+        ttk.Button(
+            peak_controls, text="Fit All",
+            command=lambda: self._fit_add_all_peaks(),
+        ).pack(side=tk.LEFT, padx=(0, 2))
 
         try:
             app.after(200, lambda: self._peak_finder._find_peaks(app))
@@ -489,83 +501,8 @@ class HistogramPreviewRenderer:
             pass
 
     def _build_peak_search_options(self, peak_panel: ttk.Frame, app) -> None:
-        """Build the peak-search refinement controls below the manual entry row.
-
-        Exposes sigma (TSpectrum resolution), energy range, and minimum-counts
-        threshold so the user can focus automatic search on a sub-range of the
-        spectrum (e.g. above the Compton edge, or at higher energies where
-        background is low).  Changes take effect on the next "Find Peaks" call.
-        """
-        # Separator + collapsible label
-        ttk.Separator(peak_panel, orient="horizontal").pack(fill=tk.X, pady=(4, 2))
-
-        search_opts = ttk.Frame(peak_panel)
-        search_opts.pack(fill=tk.X, pady=(0, 2))
-
-        # --- Row 0: Sigma ---
-        row0 = ttk.Frame(search_opts)
-        row0.pack(fill=tk.X, pady=(1, 1))
-        ttk.Label(row0, text="Sigma:").pack(side=tk.LEFT, padx=(0, 2))
-        self._sigma_var = tk.StringVar(value="3")
-        sigma_spin = ttk.Spinbox(
-            row0, textvariable=self._sigma_var,
-            from_=1, to=20, increment=1, width=4,
-        )
-        sigma_spin.pack(side=tk.LEFT, padx=(0, 8))
-
-        # Tooltip-style help
-        ttk.Label(row0, text="(TSpectrum σ)", foreground="gray").pack(side=tk.LEFT)
-
-        # --- Row 1: Energy range ---
-        row1 = ttk.Frame(search_opts)
-        row1.pack(fill=tk.X, pady=(1, 1))
-        ttk.Label(row1, text="E range:").pack(side=tk.LEFT, padx=(0, 2))
-        self._search_emin_var = tk.StringVar(value="")
-        ttk.Entry(row1, textvariable=self._search_emin_var, width=7).pack(side=tk.LEFT, padx=(0, 2))
-        ttk.Label(row1, text="–").pack(side=tk.LEFT, padx=(0, 2))
-        self._search_emax_var = tk.StringVar(value="")
-        ttk.Entry(row1, textvariable=self._search_emax_var, width=7).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Label(row1, text="keV", foreground="gray").pack(side=tk.LEFT)
-
-        # --- Row 2: Minimum counts threshold ---
-        row2 = ttk.Frame(search_opts)
-        row2.pack(fill=tk.X, pady=(1, 2))
-        ttk.Label(row2, text="Min counts:").pack(side=tk.LEFT, padx=(0, 2))
-        self._search_threshold_var = tk.StringVar(value="0")
-        ttk.Entry(row2, textvariable=self._search_threshold_var, width=8).pack(side=tk.LEFT)
-
-        def _apply_search_params(*_args) -> None:
-            """Push current control values into ``PeakFinderModule``."""
-            try:
-                sigma = float(self._sigma_var.get())
-            except (ValueError, AttributeError):
-                sigma = 3.0
-            try:
-                raw_emin = self._search_emin_var.get().strip()
-                emin = float(raw_emin) if raw_emin else None
-            except (ValueError, AttributeError):
-                emin = None
-            try:
-                raw_emax = self._search_emax_var.get().strip()
-                emax = float(raw_emax) if raw_emax else None
-            except (ValueError, AttributeError):
-                emax = None
-            try:
-                threshold = float(self._search_threshold_var.get())
-            except (ValueError, AttributeError):
-                threshold = 0.0
-
-            pf = getattr(self, "_peak_finder", None)
-            if pf is not None:
-                pf.search_sigma = sigma
-                pf.search_energy_min = emin
-                pf.search_energy_max = emax
-                pf.search_threshold_counts = threshold
-
-        # Bind so params are applied whenever the user edits them (on Return/FocusOut)
-        for widget_var in (self._sigma_var, self._search_emin_var,
-                           self._search_emax_var, self._search_threshold_var):
-            widget_var.trace_add("write", lambda *_: _apply_search_params())
+        """Removed — search configuration was unintuitive. Preserved as a no-op
+        so any subclass or external caller does not raise AttributeError."""
 
     # ------------------------------------------------------------------
     # Fit panel
@@ -583,26 +520,27 @@ class HistogramPreviewRenderer:
             fit_panel, text="Fits", font=("TkDefaultFont", 9, "bold")
         ).pack(anchor="w", pady=(0, 2))
 
-        # Dropdown + Add button
-        header = ttk.Frame(fit_panel)
-        header.pack(fill=tk.X, pady=(0, 2))
-        self._fit_dropdown_var = tk.StringVar(value="")
-        self._fit_dropdown = ttk.Combobox(
-            header,
-            textvariable=self._fit_dropdown_var,
-            values=[],
-            state="readonly",
-            width=20,
+        # Listbox for fit selection with scrollbar
+        lb_frame = ttk.Frame(fit_panel)
+        lb_frame.pack(fill=tk.X)
+        self._fit_listbox = tk.Listbox(
+            lb_frame, height=4, selectmode=tk.SINGLE, exportselection=False, width=22,
         )
-        self._fit_dropdown.pack(side=tk.LEFT, padx=(0, 4))
-        self._fit_dropdown.bind(
-            "<<ComboboxSelected>>", lambda e: self._on_fit_dropdown_changed()
-        )
-        ttk.Button(header, text="+ Fit", command=self._fit_add).pack(side=tk.LEFT)
+        lb_sb = ttk.Scrollbar(lb_frame, orient="vertical", command=self._fit_listbox.yview)
+        self._fit_listbox.configure(yscrollcommand=lb_sb.set)
+        lb_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._fit_listbox.pack(fill=tk.BOTH, expand=True)
+        self._fit_listbox.bind("<<ListboxSelect>>", lambda e: self._on_fit_listbox_changed())
+
+        # Add / Remove buttons
+        btn_row = ttk.Frame(fit_panel)
+        btn_row.pack(fill=tk.X, pady=(2, 0))
+        ttk.Button(btn_row, text="+ Fit", command=self._fit_add).pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Button(btn_row, text="Remove", command=self._fit_remove_selected).pack(side=tk.LEFT)
 
         # Container that shows the active fit's compact controls
         self._fit_container = ttk.Frame(fit_panel)
-        self._fit_container.pack(fill=tk.X, pady=(0, 2))
+        self._fit_container.pack(fill=tk.X, pady=(2, 0))
 
     def _fit_add(
         self,
@@ -621,11 +559,89 @@ class HistogramPreviewRenderer:
         self._fit_frames[fit_id] = card
         self._fit_ui_states[fit_id] = ui_state
 
-        vals = list(self._fit_dropdown.cget("values"))
-        vals.append(fit_name)
-        self._fit_dropdown.config(values=vals)
-        self._fit_dropdown.set(fit_name)
+        # Pre-fill seed parameters when energy is known
+        if energy is not None and self._fit_listbox is not None:
+            self._fit_prefill_params(fit_id, ui_state, energy, width)
+
+        if self._fit_listbox is not None:
+            self._fit_listbox.insert(tk.END, fit_name)
+            self._fit_listbox_ids.append(fit_id)
+            idx = len(self._fit_listbox_ids) - 1
+            self._fit_listbox.selection_clear(0, tk.END)
+            self._fit_listbox.selection_set(idx)
+            self._fit_listbox.see(idx)
+
         self._fit_show_frame(fit_id)
+
+    def _fit_add_all_peaks(self) -> None:
+        """Create a fit for every detected peak using an estimated width."""
+        pf = getattr(self, "_peak_finder", None)
+        if pf is None or self._fit_module is None:
+            return
+        for peak in list(pf.peaks):
+            energy = peak.get("energy")
+            if energy is None:
+                continue
+            width = self._fit_module.estimate_peak_width(energy)
+            self._fit_add(energy=energy, width=width)
+
+    def _fit_prefill_params(
+        self,
+        fit_id: int,
+        ui_state: dict,
+        energy: float,
+        width: float | None,
+    ) -> None:
+        """Pre-fill parameter entries with seed values from *FitFeature*."""
+        if self._fit_module is None:
+            return
+        fit_func = ui_state["fit_func_var"].get()
+        hist_clone = self._fit_module.current_hist_clone or self._fit_module.current_hist
+        width_val = (
+            width if (width is not None and width > 0)
+            else self._fit_module.estimate_peak_width(energy)
+        )
+        xmin, xmax = FitFeature.get_fit_range(energy, width_val)
+        if xmin is None:
+            xmin, xmax = energy - width_val / 2.0, energy + width_val / 2.0
+        params = FitFeature.default_fit_params(
+            fit_func, hist_clone, energy, width_val, xmin, xmax
+        )
+        for i, var in enumerate(ui_state["param_entries"]):
+            if i < len(params):
+                var.set(f"{params[i]:.4g}")
+
+    def _fit_remove_selected(self) -> None:
+        """Remove the fit currently selected in the listbox."""
+        if self._fit_listbox is None:
+            return
+        sel = self._fit_listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if idx >= len(self._fit_listbox_ids):
+            return
+        fit_id = self._fit_listbox_ids[idx]
+
+        if self._fit_module is not None:
+            self._fit_module.remove_fit(fit_id)
+        if fit_id in self._fit_frames:
+            try:
+                self._fit_frames[fit_id].destroy()
+            except Exception:
+                pass
+            del self._fit_frames[fit_id]
+        if fit_id in self._fit_ui_states:
+            del self._fit_ui_states[fit_id]
+
+        self._fit_listbox.delete(idx)
+        del self._fit_listbox_ids[idx]
+
+        new_count = self._fit_listbox.size()
+        if new_count > 0:
+            new_idx = min(idx, new_count - 1)
+            self._fit_listbox.selection_set(new_idx)
+            self._fit_show_frame(self._fit_listbox_ids[new_idx])
 
     def _fit_build_card(
         self,
@@ -660,16 +676,12 @@ class HistogramPreviewRenderer:
             lambda e, us=ui_state: self._fit_on_func_changed(us),
         )
 
-        ttk.Label(row0, text="E:").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Label(row0, text="E (keV):").pack(side=tk.LEFT, padx=(0, 2))
         ttk.Entry(row0, textvariable=ui_state["energy_var"], width=7).pack(
             side=tk.LEFT, padx=(0, 4)
         )
-        ttk.Label(row0, text="W:").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Label(row0, text="W (keV):").pack(side=tk.LEFT, padx=(0, 2))
         ttk.Entry(row0, textvariable=ui_state["width_var"], width=7).pack(
-            side=tk.LEFT, padx=(0, 4)
-        )
-        ttk.Label(row0, text="Opt:").pack(side=tk.LEFT, padx=(0, 2))
-        ttk.Entry(row0, textvariable=ui_state["fit_options_var"], width=5).pack(
             side=tk.LEFT, padx=(0, 6)
         )
         ttk.Button(
@@ -677,7 +689,7 @@ class HistogramPreviewRenderer:
             command=lambda fid=fit_id: self._fit_trigger(fid),
         ).pack(side=tk.LEFT)
 
-        # Params row
+        # Parameters frame
         params_frame = ttk.LabelFrame(card, text="Initial Parameters (gaus)")
         params_frame.pack(fill=tk.X, pady=(2, 1))
         ui_state["params_frame"] = params_frame
@@ -686,24 +698,33 @@ class HistogramPreviewRenderer:
         return ui_state
 
     def _fit_rebuild_params(self, ui_state: dict, param_names: list[str]) -> None:
-        """Destroy and recreate parameter entry widgets in the params frame."""
+        """Destroy and recreate parameter entry widgets in the params frame.
+
+        Parameters are arranged in a 2-per-row grid so that even fit functions
+        with many parameters (e.g. *2gaus+pol1* with 8) remain readable without
+        a very wide horizontal scroll.
+        """
         frame = ui_state["params_frame"]
         for w in frame.winfo_children():
             w.destroy()
         ui_state["param_entries"] = []
         ui_state["param_fixed_vars"] = []
+
+        COLS_PER_ROW = 2
         for i, name in enumerate(param_names):
+            grid_row = i // COLS_PER_ROW
+            col_base = (i % COLS_PER_ROW) * 3
             ttk.Label(frame, text=f"{name}:").grid(
-                row=0, column=i * 3, sticky="e", padx=(4, 2)
+                row=grid_row, column=col_base, sticky="e", padx=(4, 2), pady=(2, 1)
             )
             var = tk.StringVar(value="")
-            ttk.Entry(frame, textvariable=var, width=8).grid(
-                row=0, column=i * 3 + 1, sticky="w", padx=(0, 2)
+            ttk.Entry(frame, textvariable=var, width=9).grid(
+                row=grid_row, column=col_base + 1, sticky="w", padx=(0, 2), pady=(2, 1)
             )
             var.trace_add("write", lambda *_, us=ui_state: self._fit_schedule_refit(us))
             fixed_var = tk.BooleanVar(value=False)
             ttk.Checkbutton(frame, text="Fix", variable=fixed_var).grid(
-                row=0, column=i * 3 + 2, sticky="w", padx=(0, 8)
+                row=grid_row, column=col_base + 2, sticky="w", padx=(0, 8), pady=(2, 1)
             )
             ui_state["param_entries"].append(var)
             ui_state["param_fixed_vars"].append(fixed_var)
@@ -712,20 +733,30 @@ class HistogramPreviewRenderer:
     # Fit event handlers
     # ------------------------------------------------------------------
 
-    def _on_fit_dropdown_changed(self) -> None:
-        if self._fit_module is None or self._fit_dropdown_var is None:
+    def _on_fit_listbox_changed(self) -> None:
+        if self._fit_module is None or self._fit_listbox is None:
             return
-        selected = self._fit_dropdown_var.get()
-        for fit_id, name in self._fit_module.list_fits():
-            if name == selected:
-                self._fit_show_frame(fit_id)
-                return
+        sel = self._fit_listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if idx < len(self._fit_listbox_ids):
+            self._fit_show_frame(self._fit_listbox_ids[idx])
 
     def _fit_show_frame(self, fit_id: int) -> None:
         for frame in self._fit_frames.values():
             frame.pack_forget()
         if fit_id in self._fit_frames:
             self._fit_frames[fit_id].pack(fill=tk.X)
+        # Sync listbox selection
+        if self._fit_listbox is not None:
+            try:
+                idx = self._fit_listbox_ids.index(fit_id)
+                self._fit_listbox.selection_clear(0, tk.END)
+                self._fit_listbox.selection_set(idx)
+                self._fit_listbox.see(idx)
+            except (ValueError, AttributeError):
+                pass
 
     def _fit_on_func_changed(self, ui_state: dict) -> None:
         fit_func = ui_state["fit_func_var"].get()
@@ -957,6 +988,8 @@ class HistogramPreviewRenderer:
                 return
 
             # Assemble current render options from axis controls
+            _pf_save = getattr(self, "_peak_finder", None)
+            _peaks_save = getattr(_pf_save, "peaks", [])
             options = HistogramControlsModule.build_render_options(
                 width, height,
                 xmin_raw=getattr(self, "_xmin_var", None) and self._xmin_var.get() or "",
@@ -969,7 +1002,8 @@ class HistogramPreviewRenderer:
                 ytitle=getattr(self, "_ylabel_var", None) and self._ylabel_var.get() or "",
                 title=getattr(self, "_title_var", None) and self._title_var.get() or "",
                 show_markers=bool(getattr(self, "_show_markers_var", None) and self._show_markers_var.get()),
-                peak_energies=[p["energy"] for p in getattr(getattr(self, "_peak_finder", None), "peaks", [])],
+                peak_energies=[p["energy"] for p in _peaks_save if p.get("source") == "automatic"],
+                manual_peak_energies=[p["energy"] for p in _peaks_save if p.get("source") == "manual"],
             )
 
             save_mgr = SaveManager()
@@ -1058,6 +1092,8 @@ class HistogramPreviewRenderer:
         # Build render options WITHOUT target dimensions so render_into_label
         # reads the actual label size (winfo_width / winfo_height) and fills
         # the label exactly — no blank white-space padding.
+        _pf = getattr(self, "_peak_finder", None)
+        _peaks = getattr(_pf, "peaks", [])
         options = HistogramControlsModule.build_render_options(
             0, 0,
             xmin_raw=getattr(self, "_xmin_var", None) and self._xmin_var.get() or "",
@@ -1070,7 +1106,8 @@ class HistogramPreviewRenderer:
             ytitle=getattr(self, "_ylabel_var", None) and self._ylabel_var.get() or "",
             title=getattr(self, "_title_var", None) and self._title_var.get() or "",
             show_markers=bool(getattr(self, "_show_markers_var", None) and self._show_markers_var.get()),
-            peak_energies=[p["energy"] for p in getattr(getattr(self, "_peak_finder", None), "peaks", [])],
+            peak_energies=[p["energy"] for p in _peaks if p.get("source") == "automatic"],
+            manual_peak_energies=[p["energy"] for p in _peaks if p.get("source") == "manual"],
         )
 
         if pm:
