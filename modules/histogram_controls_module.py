@@ -9,11 +9,22 @@ Architecture note (from AGENTS.md)
 -----------------------------------
 Modules own domain logic; they must **not** import tkinter or hold UI state.
 Callers (tab managers) pass values in and receive computed values back.
+
+Log-scale scroll
+----------------
+When ``log_mode=True`` is passed to ``clamp_min`` / ``clamp_max``, each scroll
+tick multiplies (up) or divides (down) the value by ``_LOG_FACTOR`` (≈ 1.122,
+i.e. ``10 ** 0.05``).  This gives ~30 ticks to traverse a 1.5-decade HPGe X
+axis — quick without overshooting.  In linear mode the existing additive step
+is used unchanged.
 """
 
 from __future__ import annotations
 
+import math
 from typing import Any
+
+_LOG_FACTOR: float = 10 ** 0.05  # ≈ 1.122 per scroll tick
 
 
 class HistogramControlsModule:
@@ -98,26 +109,44 @@ class HistogramControlsModule:
 
     @staticmethod
     def clamp_min(current: float, step: float, direction_down: bool,
-                  min_limit: float, max_val: float) -> float:
+                  min_limit: float, max_val: float,
+                  log_mode: bool = False) -> float:
         """Return a new validated min value after a scroll event.
 
         direction_down=True  → decrease (scroll down / Button-5)
         direction_down=False → increase (scroll up / Button-4)
+
+        When ``log_mode=True`` a multiplicative step (``_LOG_FACTOR``) is used
+        instead of the additive ``step`` so the scroll feels natural on a log axis.
         """
-        current = current - step if direction_down else current + step
-        current = max(min_limit, current)
-        current = min(current, max_val - 1.0)
+        if log_mode:
+            current = current / _LOG_FACTOR if direction_down else current * _LOG_FACTOR
+            current = max(min_limit, current)
+            current = min(current, max_val * 0.999)
+        else:
+            current = current - step if direction_down else current + step
+            current = max(min_limit, current)
+            current = min(current, max_val - 1.0)
         if current <= 0:
             current = 0.1
         return round(current, 1)
 
     @staticmethod
     def clamp_max(current: float, step: float, direction_down: bool,
-                  min_val: float, max_limit: float) -> float:
-        """Return a new validated max value after a scroll event."""
-        current = current - step if direction_down else current + step
-        current = min(max_limit, current)
-        current = max(current, min_val + 1.0)
+                  min_val: float, max_limit: float,
+                  log_mode: bool = False) -> float:
+        """Return a new validated max value after a scroll event.
+
+        When ``log_mode=True`` a multiplicative step is used.
+        """
+        if log_mode:
+            current = current / _LOG_FACTOR if direction_down else current * _LOG_FACTOR
+            current = min(max_limit, current)
+            current = max(current, min_val * 1.001)
+        else:
+            current = current - step if direction_down else current + step
+            current = min(max_limit, current)
+            current = max(current, min_val + 1.0)
         return round(current, 1)
 
     # ------------------------------------------------------------------
@@ -125,10 +154,12 @@ class HistogramControlsModule:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def validate_min(raw: str, max_raw: str) -> str | None:
+    def validate_min(raw: str, max_raw: str,
+                     hard_min: float | None = None) -> str | None:
         """Validate and format a min-range string.
 
         Returns the formatted string (``"N.N"``) if valid, else ``None``.
+        Silently snaps to ``hard_min`` if the value is below it.
         """
         try:
             val = float(raw)
@@ -137,18 +168,26 @@ class HistogramControlsModule:
             xmax = float(max_raw)
             if val >= xmax:
                 val = xmax - 1.0
+            if hard_min is not None:
+                val = max(val, hard_min)
             return f"{val:.1f}"
         except (ValueError, TypeError):
             return None
 
     @staticmethod
-    def validate_max(raw: str, min_raw: str) -> str | None:
-        """Validate and format a max-range string."""
+    def validate_max(raw: str, min_raw: str,
+                     hard_max: float | None = None) -> str | None:
+        """Validate and format a max-range string.
+
+        Silently snaps to ``hard_max`` if the value exceeds it.
+        """
         try:
             val = float(raw)
             xmin = float(min_raw)
             if val <= xmin:
                 val = xmin + 1.0
+            if hard_max is not None:
+                val = min(val, hard_max)
             return f"{val:.1f}"
         except (ValueError, TypeError):
             return None

@@ -407,6 +407,12 @@ class TestTitleAndLabelControls(_RendererBase):
         r._title_var.set("My Spectrum")
         self.assertEqual(r._title_var.get(), "My Spectrum")
 
+    def test_title_initial_from_histogram(self):
+        obj = _make_mock_histogram("h1")
+        obj.GetTitle.return_value = "Run 42"
+        r = self._build_renderer(obj)
+        self.assertEqual(r._title_var.get(), "Run 42")
+
 
 class TestShowMarkersControl(_RendererBase):
     """Show-markers checkbox."""
@@ -563,6 +569,46 @@ class TestHistogramControlsModule(unittest.TestCase):
         result = M.clamp_max(10.0, 100.0, direction_down=True,
                              min_val=5.0, max_limit=5000.0)
         self.assertGreater(result, 5.0)
+
+    def test_clamp_max_cannot_exceed_hard_max(self):
+        """Scrolling above hard_max snaps to hard_max."""
+        M = self._module()
+        result = M.clamp_max(2999.0, 100.0, direction_down=False,
+                             min_val=0.0, max_limit=3000.0)
+        self.assertLessEqual(result, 3000.0)
+
+    def test_clamp_min_log_mode_multiplies(self):
+        """In log mode, scrolling up multiplies the value."""
+        M = self._module()
+        result = M.clamp_min(100.0, 0.0, direction_down=False,
+                             min_limit=0.1, max_val=3000.0, log_mode=True)
+        # 100 * 10^0.05 ≈ 112.2
+        self.assertGreater(result, 100.0)
+        self.assertLess(result, 120.0)
+
+    def test_clamp_max_log_mode_divides_on_scroll_down(self):
+        """In log mode, scrolling down divides the value."""
+        M = self._module()
+        result = M.clamp_max(3000.0, 0.0, direction_down=True,
+                             min_val=100.0, max_limit=3000.0, log_mode=True)
+        # 3000 / 10^0.05 ≈ 2673
+        self.assertLess(result, 3000.0)
+        self.assertGreater(result, 2500.0)
+
+    def test_validate_max_respects_hard_max(self):
+        """validate_max snaps to hard_max when typed value exceeds it."""
+        M = self._module()
+        result = M.validate_max("5000.0", "100.0", hard_max=3000.0)
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(float(result), 3000.0, places=1)
+
+    def test_validate_min_respects_hard_min(self):
+        """validate_min raises value to hard_min when typed value is below it."""
+        M = self._module()
+        # hard_min=100, typed 50 → should be snapped up to 100
+        result = M.validate_min("50.0", "3000.0", hard_min=100.0)
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(float(result), 100.0, places=1)
 
     def test_validate_min_formats_to_one_decimal(self):
         M = self._module()
