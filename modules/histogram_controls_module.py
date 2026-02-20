@@ -118,9 +118,15 @@ class HistogramControlsModule:
 
         When ``log_mode=True`` a multiplicative step (``_LOG_FACTOR``) is used
         instead of the additive ``step`` so the scroll feels natural on a log axis.
+        When the current value is below 1.0 in log mode a flat ±1.0 additive
+        step is used in *both* directions to escape the sub-1 zone quickly;
+        otherwise each log-mode tick would crawl (e.g. 0.5 → 0.561 → 0.630 …).
         """
         if log_mode:
-            current = current / _LOG_FACTOR if direction_down else current * _LOG_FACTOR
+            if current < 1.0:
+                current = current - 1.0 if direction_down else current + 1.0
+            else:
+                current = current / _LOG_FACTOR if direction_down else current * _LOG_FACTOR
             current = max(min_limit, current)
             current = min(current, max_val * 0.999)
         else:
@@ -137,10 +143,15 @@ class HistogramControlsModule:
                   log_mode: bool = False) -> float:
         """Return a new validated max value after a scroll event.
 
-        When ``log_mode=True`` a multiplicative step is used.
+        When ``log_mode=True`` a multiplicative step is used for values ≥ 1.
+        Sub-1 values use the same ±1.0 additive escape as ``clamp_min`` so the
+        max entry does not crawl when it crosses the 1-boundary.
         """
         if log_mode:
-            current = current / _LOG_FACTOR if direction_down else current * _LOG_FACTOR
+            if current < 1.0:
+                current = current - 1.0 if direction_down else current + 1.0
+            else:
+                current = current / _LOG_FACTOR if direction_down else current * _LOG_FACTOR
             current = min(max_limit, current)
             current = max(current, min_val * 1.001)
         else:
@@ -255,6 +266,17 @@ class HistogramControlsModule:
             options["markers"] = list(peak_energies)
 
         return options
+
+    @staticmethod
+    def compute_preview_size(win_w: int, win_h: int) -> tuple[int, int]:
+        """Return ``(width, height)`` pixel targets for the histogram preview label.
+
+        Width  ~ 80 % of window width  (min 160).
+        Height ~ 50 % of window height (min 120).
+        """
+        w = int(max(160, win_w * 0.8))
+        h = int(max(120, win_h * 0.5))
+        return w, h
 
 
 __all__ = ["HistogramControlsModule"]

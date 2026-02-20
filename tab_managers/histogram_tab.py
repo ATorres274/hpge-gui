@@ -308,7 +308,7 @@ class HistogramPreviewRenderer:
     """
 
     def __init__(self) -> None:
-        pass
+        self._pending_after: dict = {"id": None}
 
     def build_histogram_tab(self, app, parent_container: ttk.Frame, obj, root_path: str, path: str) -> ttk.Frame:
         # keep a reference to the app (used for rendering via HistogramRenderer)
@@ -378,201 +378,11 @@ class HistogramPreviewRenderer:
 
         # --- Preview controls: axis ranges, title, markers, peaks ---
         try:
-            # create a compact controls area inside the existing controls_frame
+            defaults = HistogramControlsModule.compute_defaults(obj)
             axis_controls = ttk.Frame(middle_bar)
             axis_controls.pack(side=tk.LEFT, anchor="nw", padx=2, pady=(0, 0))
-
-            # Delegate default-extraction to the module (no ROOT knowledge in tab)
-            defaults = HistogramControlsModule.compute_defaults(obj)
-            x_min_default   = defaults["x_min"]
-            x_max_default   = defaults["x_max"]
-            y_min_default   = defaults["y_min"]
-            y_max_default   = defaults["y_max"]
-            x_scroll_step   = defaults["x_scroll_step"]
-            y_scroll_step   = defaults["y_scroll_step"]
-
-            # Variables for axis ranges (StringVar ensures fixed 1-decimal display)
-            self._xmin_var = tk.StringVar(value=f"{x_min_default:.1f}")
-            self._xmax_var = tk.StringVar(value=f"{x_max_default:.1f}")
-            self._ymin_var = tk.StringVar(value=f"{y_min_default:.1f}")
-            self._ymax_var = tk.StringVar(value=f"{y_max_default:.1f}")
-
-            # Log scale toggles (log y enabled by default)
-            self._logx_var = tk.BooleanVar(value=False)
-            self._logy_var = tk.BooleanVar(value=True)
-
-            # Axis label and title variables
-            self._xlabel_var = tk.StringVar(value=defaults["x_label"])
-            self._ylabel_var = tk.StringVar(value=defaults["y_label"])
-            self._title_var  = tk.StringVar(value=defaults["title"])
-
-            # Show-markers toggle (on by default)
-            self._show_markers_var = tk.BooleanVar(value=True)
-
-            # Helper to schedule renders (debounced)
-            self._pending_after = {"id": None}
-            def _schedule_render(delay=150):
-                try:
-                    app = getattr(self, "_app", None)
-                    if not app:
-                        return
-                    if self._pending_after["id"] is not None:
-                        try:
-                            app.after_cancel(self._pending_after["id"])
-                        except Exception:
-                            pass
-                    self._pending_after["id"] = app.after(delay, lambda: self.render_preview(self._current_obj))
-                except Exception:
-                    pass
-
-            # Helper to reset all controls to histogram defaults
-            def _reset_controls():
-                self._xmin_var.set(f"{x_min_default:.1f}")
-                self._xmax_var.set(f"{x_max_default:.1f}")
-                self._ymin_var.set(f"{y_min_default:.1f}")
-                self._ymax_var.set(f"{y_max_default:.1f}")
-                self._logx_var.set(False)
-                self._logy_var.set(True)
-                self._show_markers_var.set(True)
-                self._xlabel_var.set(defaults["x_label"])
-                self._ylabel_var.set(defaults["y_label"])
-                self._title_var.set(defaults["title"])
-                self._schedule_render()
-
-            # Expose reset on self so tests and external callers can trigger it
-            self._reset_controls = _reset_controls
-
-            # Store hard limits for use by validation and scroll at render time
-            self._x_hard_min = x_min_default
-            self._x_hard_max = x_max_default
-            self._y_hard_min = y_min_default
-            self._y_hard_max = y_max_default
-
-            # Axis controls grid: Title row first, then X range, X label, Y range, Y label, extras
-            # No column weight — entries stay at their natural width
-
-            # --- Title row (top for natural reading flow) ---
-            ttk.Label(axis_controls, text="Title:").grid(
-                row=0, column=0, sticky="e", padx=(2, 2), pady=(2, 2))
-            title_text = ttk.Entry(axis_controls, textvariable=self._title_var, width=30)
-            title_text.grid(row=0, column=1, columnspan=3, padx=(0, 4), pady=(2, 2))
-
-            # --- X axis range row ---
-            ttk.Label(axis_controls, text="X:").grid(
-                row=1, column=0, sticky="e", padx=(2, 2), pady=(2, 1))
-            x_min_text = ttk.Entry(axis_controls, textvariable=self._xmin_var, width=8)
-            x_min_text.grid(row=1, column=1, padx=(0, 2), pady=(2, 1))
-            ttk.Label(axis_controls, text="to").grid(
-                row=1, column=2, padx=2, pady=(2, 1))
-            x_max_text = ttk.Entry(axis_controls, textvariable=self._xmax_var, width=8)
-            x_max_text.grid(row=1, column=3, padx=(0, 4), pady=(2, 1))
-            logx_checkbox = ttk.Checkbutton(
-                axis_controls, text="Log X", variable=self._logx_var,
-                command=lambda: self._schedule_render())
-            logx_checkbox.grid(row=1, column=4, padx=(0, 2), pady=(2, 1))
-
-            # X range validation on focus-out — module does the arithmetic;
-            # hard_max clamps any typed value to the histogram's original max
-            def _format_xmin(event=None):
-                result = HistogramControlsModule.validate_min(
-                    self._xmin_var.get(), self._xmax_var.get(),
-                    hard_min=self._x_hard_min)
-                if result is not None:
-                    self._xmin_var.set(result)
-                self._schedule_render()
-
-            def _format_xmax(event=None):
-                result = HistogramControlsModule.validate_max(
-                    self._xmax_var.get(), self._xmin_var.get(),
-                    hard_max=self._x_hard_max)
-                if result is not None:
-                    self._xmax_var.set(result)
-                self._schedule_render()
-
-            x_min_text.bind("<FocusOut>", _format_xmin)
-            x_min_text.bind("<Return>", _format_xmin)
-            x_min_text.bind("<MouseWheel>", lambda e: self._on_min_scroll(e, self._xmin_var, self._xmax_var, self._x_hard_min, self._x_hard_max, x_scroll_step, log_mode=self._logx_var.get()))
-            x_min_text.bind("<Button-4>",   lambda e: self._on_min_scroll(e, self._xmin_var, self._xmax_var, self._x_hard_min, self._x_hard_max, x_scroll_step, log_mode=self._logx_var.get()))
-            x_min_text.bind("<Button-5>",   lambda e: self._on_min_scroll(e, self._xmin_var, self._xmax_var, self._x_hard_min, self._x_hard_max, x_scroll_step, log_mode=self._logx_var.get()))
-            x_max_text.bind("<FocusOut>", _format_xmax)
-            x_max_text.bind("<Return>", _format_xmax)
-            x_max_text.bind("<MouseWheel>", lambda e: self._on_max_scroll(e, self._xmax_var, self._xmin_var, self._x_hard_min, self._x_hard_max, x_scroll_step, log_mode=self._logx_var.get()))
-            x_max_text.bind("<Button-4>",   lambda e: self._on_max_scroll(e, self._xmax_var, self._xmin_var, self._x_hard_min, self._x_hard_max, x_scroll_step, log_mode=self._logx_var.get()))
-            x_max_text.bind("<Button-5>",   lambda e: self._on_max_scroll(e, self._xmax_var, self._xmin_var, self._x_hard_min, self._x_hard_max, x_scroll_step, log_mode=self._logx_var.get()))
-
-            # --- X label row ---
-            ttk.Label(axis_controls, text="X label:").grid(
-                row=2, column=0, sticky="e", padx=(2, 2), pady=(1, 2))
-            x_label_text = ttk.Entry(axis_controls, textvariable=self._xlabel_var, width=30)
-            x_label_text.grid(row=2, column=1, columnspan=3, padx=(0, 4), pady=(1, 2))
-
-            # --- Y axis range row ---
-            ttk.Label(axis_controls, text="Y:").grid(
-                row=3, column=0, sticky="e", padx=(2, 2), pady=(2, 1))
-            y_min_text = ttk.Entry(axis_controls, textvariable=self._ymin_var, width=8)
-            y_min_text.grid(row=3, column=1, padx=(0, 2), pady=(2, 1))
-            ttk.Label(axis_controls, text="to").grid(
-                row=3, column=2, padx=2, pady=(2, 1))
-            y_max_text = ttk.Entry(axis_controls, textvariable=self._ymax_var, width=8)
-            y_max_text.grid(row=3, column=3, padx=(0, 4), pady=(2, 1))
-            logy_checkbox = ttk.Checkbutton(
-                axis_controls, text="Log Y", variable=self._logy_var,
-                command=lambda: self._schedule_render())
-            logy_checkbox.grid(row=3, column=4, padx=(0, 2), pady=(2, 1))
-
-            # Y range validation on focus-out
-            def _format_ymin(event=None):
-                result = HistogramControlsModule.validate_min(
-                    self._ymin_var.get(), self._ymax_var.get(),
-                    hard_min=self._y_hard_min)
-                if result is not None:
-                    self._ymin_var.set(result)
-                self._schedule_render()
-
-            def _format_ymax(event=None):
-                result = HistogramControlsModule.validate_max(
-                    self._ymax_var.get(), self._ymin_var.get(),
-                    hard_max=self._y_hard_max)
-                if result is not None:
-                    self._ymax_var.set(result)
-                self._schedule_render()
-
-            y_min_text.bind("<FocusOut>", _format_ymin)
-            y_min_text.bind("<Return>", _format_ymin)
-            y_min_text.bind("<MouseWheel>", lambda e: self._on_min_scroll(e, self._ymin_var, self._ymax_var, self._y_hard_min, self._y_hard_max, y_scroll_step, log_mode=self._logy_var.get()))
-            y_min_text.bind("<Button-4>",   lambda e: self._on_min_scroll(e, self._ymin_var, self._ymax_var, self._y_hard_min, self._y_hard_max, y_scroll_step, log_mode=self._logy_var.get()))
-            y_min_text.bind("<Button-5>",   lambda e: self._on_min_scroll(e, self._ymin_var, self._ymax_var, self._y_hard_min, self._y_hard_max, y_scroll_step, log_mode=self._logy_var.get()))
-            y_max_text.bind("<FocusOut>", _format_ymax)
-            y_max_text.bind("<Return>", _format_ymax)
-            y_max_text.bind("<MouseWheel>", lambda e: self._on_max_scroll(e, self._ymax_var, self._ymin_var, self._y_hard_min, self._y_hard_max, y_scroll_step, log_mode=self._logy_var.get()))
-            y_max_text.bind("<Button-4>",   lambda e: self._on_max_scroll(e, self._ymax_var, self._ymin_var, self._y_hard_min, self._y_hard_max, y_scroll_step, log_mode=self._logy_var.get()))
-            y_max_text.bind("<Button-5>",   lambda e: self._on_max_scroll(e, self._ymax_var, self._ymin_var, self._y_hard_min, self._y_hard_max, y_scroll_step, log_mode=self._logy_var.get()))
-
-            # --- Y label row ---
-            ttk.Label(axis_controls, text="Y label:").grid(
-                row=4, column=0, sticky="e", padx=(2, 2), pady=(1, 2))
-            y_label_text = ttk.Entry(axis_controls, textvariable=self._ylabel_var, width=30)
-            y_label_text.grid(row=4, column=1, columnspan=3, padx=(0, 4), pady=(1, 2))
-
-            # --- Extras row: Show Markers checkbox + Reset button ---
-            extras_frame = ttk.Frame(axis_controls)
-            extras_frame.grid(row=5, column=0, columnspan=5, sticky="w", padx=(2, 2), pady=(2, 4))
-            ttk.Checkbutton(
-                extras_frame, text="Show Markers",
-                variable=self._show_markers_var,
-                command=lambda: self._schedule_render(),
-            ).pack(side=tk.LEFT, padx=(0, 8))
-            ttk.Button(extras_frame, text="Reset", command=_reset_controls).pack(side=tk.LEFT)
-
-            # Trigger a debounced render on every keystroke in any entry
-            def _on_any_change(*_):
-                self._schedule_render()
-            for _var in (self._xmin_var, self._xmax_var,
-                         self._ymin_var, self._ymax_var,
-                         self._xlabel_var, self._ylabel_var, self._title_var):
-                _var.trace_add("write", _on_any_change)
-
-            # --- Peak finder panel (right of axis controls, extracted to method) ---
+            self._build_axis_controls(axis_controls, app, defaults)
+            # --- Peak finder panel (right of axis controls) ---
             self._build_peak_panel(middle_bar, app, obj)
         except Exception:
             pass
@@ -582,6 +392,222 @@ class HistogramPreviewRenderer:
         bottom_sep.pack(fill=tk.X, padx=4, pady=(2, 0))
 
         return main_frame
+
+    def _build_axis_controls(self, axis_controls: ttk.Frame, app, defaults: dict) -> None:
+        """Populate *axis_controls* with the 6-row range/label/extras grid.
+
+        Sets instance vars consumed by ``render_preview`` and ``_schedule_render``:
+        ``_xmin_var``, ``_xmax_var``, ``_ymin_var``, ``_ymax_var``,
+        ``_logx_var``, ``_logy_var``, ``_xlabel_var``, ``_ylabel_var``,
+        ``_title_var``, ``_show_markers_var``,
+        ``_x_hard_min``, ``_x_hard_max``, ``_y_hard_min``,
+        ``_reset_controls``.
+
+        Y max is intentionally **unclamped** on the upper end — ROOT allows
+        the Y axis range to exceed the histogram's data maximum, so users can
+        freely scroll/type above the preset value.  X max is hard-clamped to
+        the histogram's original X axis maximum.
+        """
+        x_min_default = defaults["x_min"]
+        x_max_default = defaults["x_max"]
+        y_min_default = defaults["y_min"]
+        y_max_default = defaults["y_max"]
+        x_scroll_step = defaults["x_scroll_step"]
+        y_scroll_step = defaults["y_scroll_step"]
+
+        # StringVars — always display exactly one decimal place
+        self._xmin_var = tk.StringVar(value=f"{x_min_default:.1f}")
+        self._xmax_var = tk.StringVar(value=f"{x_max_default:.1f}")
+        self._ymin_var = tk.StringVar(value=f"{y_min_default:.1f}")
+        self._ymax_var = tk.StringVar(value=f"{y_max_default:.1f}")
+
+        # Log scale toggles (log Y enabled by default for HPGe spectra)
+        self._logx_var = tk.BooleanVar(value=False)
+        self._logy_var = tk.BooleanVar(value=True)
+
+        # Axis label / title vars
+        self._xlabel_var = tk.StringVar(value=defaults["x_label"])
+        self._ylabel_var = tk.StringVar(value=defaults["y_label"])
+        self._title_var  = tk.StringVar(value=defaults["title"])
+
+        # Show-markers toggle (on by default)
+        self._show_markers_var = tk.BooleanVar(value=True)
+
+        # Hard limits: X is clamped to original axis range; Y max is unclamped
+        self._x_hard_min = x_min_default
+        self._x_hard_max = x_max_default
+        self._y_hard_min = y_min_default
+        # Y max has no hard upper cap — ROOT allows the range to exceed data max
+        _Y_MAX_LIMIT = float("inf")
+
+        # --- Row 0: Title ---
+        ttk.Label(axis_controls, text="Title:").grid(
+            row=0, column=0, sticky="e", padx=(2, 2), pady=(2, 2))
+        ttk.Entry(axis_controls, textvariable=self._title_var, width=30).grid(
+            row=0, column=1, columnspan=3, padx=(0, 4), pady=(2, 2))
+
+        # --- Row 1: X range ---
+        ttk.Label(axis_controls, text="X:").grid(
+            row=1, column=0, sticky="e", padx=(2, 2), pady=(2, 1))
+        x_min_text = ttk.Entry(axis_controls, textvariable=self._xmin_var, width=8)
+        x_min_text.grid(row=1, column=1, padx=(0, 2), pady=(2, 1))
+        ttk.Label(axis_controls, text="to").grid(row=1, column=2, padx=2, pady=(2, 1))
+        x_max_text = ttk.Entry(axis_controls, textvariable=self._xmax_var, width=8)
+        x_max_text.grid(row=1, column=3, padx=(0, 4), pady=(2, 1))
+        ttk.Checkbutton(
+            axis_controls, text="Log X", variable=self._logx_var,
+            command=lambda: self._schedule_render(),
+        ).grid(row=1, column=4, padx=(0, 2), pady=(2, 1))
+
+        def _format_xmin(event=None):
+            result = HistogramControlsModule.validate_min(
+                self._xmin_var.get(), self._xmax_var.get(),
+                hard_min=self._x_hard_min)
+            if result is not None:
+                self._xmin_var.set(result)
+            self._schedule_render()
+
+        def _format_xmax(event=None):
+            result = HistogramControlsModule.validate_max(
+                self._xmax_var.get(), self._xmin_var.get(),
+                hard_max=self._x_hard_max)
+            if result is not None:
+                self._xmax_var.set(result)
+            self._schedule_render()
+
+        x_min_text.bind("<FocusOut>", _format_xmin)
+        x_min_text.bind("<Return>",   _format_xmin)
+        x_min_text.bind("<MouseWheel>", lambda e: self._on_min_scroll(
+            e, self._xmin_var, self._xmax_var,
+            self._x_hard_min, self._x_hard_max, x_scroll_step,
+            log_mode=self._logx_var.get()))
+        x_min_text.bind("<Button-4>", lambda e: self._on_min_scroll(
+            e, self._xmin_var, self._xmax_var,
+            self._x_hard_min, self._x_hard_max, x_scroll_step,
+            log_mode=self._logx_var.get()))
+        x_min_text.bind("<Button-5>", lambda e: self._on_min_scroll(
+            e, self._xmin_var, self._xmax_var,
+            self._x_hard_min, self._x_hard_max, x_scroll_step,
+            log_mode=self._logx_var.get()))
+        x_max_text.bind("<FocusOut>", _format_xmax)
+        x_max_text.bind("<Return>",   _format_xmax)
+        x_max_text.bind("<MouseWheel>", lambda e: self._on_max_scroll(
+            e, self._xmax_var, self._xmin_var,
+            self._x_hard_min, self._x_hard_max, x_scroll_step,
+            log_mode=self._logx_var.get()))
+        x_max_text.bind("<Button-4>", lambda e: self._on_max_scroll(
+            e, self._xmax_var, self._xmin_var,
+            self._x_hard_min, self._x_hard_max, x_scroll_step,
+            log_mode=self._logx_var.get()))
+        x_max_text.bind("<Button-5>", lambda e: self._on_max_scroll(
+            e, self._xmax_var, self._xmin_var,
+            self._x_hard_min, self._x_hard_max, x_scroll_step,
+            log_mode=self._logx_var.get()))
+
+        # --- Row 2: X label ---
+        ttk.Label(axis_controls, text="X label:").grid(
+            row=2, column=0, sticky="e", padx=(2, 2), pady=(1, 2))
+        ttk.Entry(axis_controls, textvariable=self._xlabel_var, width=30).grid(
+            row=2, column=1, columnspan=3, padx=(0, 4), pady=(1, 2))
+
+        # --- Row 3: Y range ---
+        ttk.Label(axis_controls, text="Y:").grid(
+            row=3, column=0, sticky="e", padx=(2, 2), pady=(2, 1))
+        y_min_text = ttk.Entry(axis_controls, textvariable=self._ymin_var, width=8)
+        y_min_text.grid(row=3, column=1, padx=(0, 2), pady=(2, 1))
+        ttk.Label(axis_controls, text="to").grid(row=3, column=2, padx=2, pady=(2, 1))
+        y_max_text = ttk.Entry(axis_controls, textvariable=self._ymax_var, width=8)
+        y_max_text.grid(row=3, column=3, padx=(0, 4), pady=(2, 1))
+        ttk.Checkbutton(
+            axis_controls, text="Log Y", variable=self._logy_var,
+            command=lambda: self._schedule_render(),
+        ).grid(row=3, column=4, padx=(0, 2), pady=(2, 1))
+
+        def _format_ymin(event=None):
+            result = HistogramControlsModule.validate_min(
+                self._ymin_var.get(), self._ymax_var.get(),
+                hard_min=self._y_hard_min)
+            if result is not None:
+                self._ymin_var.set(result)
+            self._schedule_render()
+
+        def _format_ymax(event=None):
+            # Y max has no hard upper cap
+            result = HistogramControlsModule.validate_max(
+                self._ymax_var.get(), self._ymin_var.get())
+            if result is not None:
+                self._ymax_var.set(result)
+            self._schedule_render()
+
+        y_min_text.bind("<FocusOut>", _format_ymin)
+        y_min_text.bind("<Return>",   _format_ymin)
+        y_min_text.bind("<MouseWheel>", lambda e: self._on_min_scroll(
+            e, self._ymin_var, self._ymax_var,
+            self._y_hard_min, _Y_MAX_LIMIT, y_scroll_step,
+            log_mode=self._logy_var.get()))
+        y_min_text.bind("<Button-4>", lambda e: self._on_min_scroll(
+            e, self._ymin_var, self._ymax_var,
+            self._y_hard_min, _Y_MAX_LIMIT, y_scroll_step,
+            log_mode=self._logy_var.get()))
+        y_min_text.bind("<Button-5>", lambda e: self._on_min_scroll(
+            e, self._ymin_var, self._ymax_var,
+            self._y_hard_min, _Y_MAX_LIMIT, y_scroll_step,
+            log_mode=self._logy_var.get()))
+        y_max_text.bind("<FocusOut>", _format_ymax)
+        y_max_text.bind("<Return>",   _format_ymax)
+        y_max_text.bind("<MouseWheel>", lambda e: self._on_max_scroll(
+            e, self._ymax_var, self._ymin_var,
+            self._y_hard_min, _Y_MAX_LIMIT, y_scroll_step,
+            log_mode=self._logy_var.get()))
+        y_max_text.bind("<Button-4>", lambda e: self._on_max_scroll(
+            e, self._ymax_var, self._ymin_var,
+            self._y_hard_min, _Y_MAX_LIMIT, y_scroll_step,
+            log_mode=self._logy_var.get()))
+        y_max_text.bind("<Button-5>", lambda e: self._on_max_scroll(
+            e, self._ymax_var, self._ymin_var,
+            self._y_hard_min, _Y_MAX_LIMIT, y_scroll_step,
+            log_mode=self._logy_var.get()))
+
+        # --- Row 4: Y label ---
+        ttk.Label(axis_controls, text="Y label:").grid(
+            row=4, column=0, sticky="e", padx=(2, 2), pady=(1, 2))
+        ttk.Entry(axis_controls, textvariable=self._ylabel_var, width=30).grid(
+            row=4, column=1, columnspan=3, padx=(0, 4), pady=(1, 2))
+
+        # --- Row 5: Show Markers + Reset ---
+        extras_frame = ttk.Frame(axis_controls)
+        extras_frame.grid(row=5, column=0, columnspan=5, sticky="w",
+                          padx=(2, 2), pady=(2, 4))
+        ttk.Checkbutton(
+            extras_frame, text="Show Markers",
+            variable=self._show_markers_var,
+            command=lambda: self._schedule_render(),
+        ).pack(side=tk.LEFT, padx=(0, 8))
+
+        def _reset_controls():
+            self._xmin_var.set(f"{x_min_default:.1f}")
+            self._xmax_var.set(f"{x_max_default:.1f}")
+            self._ymin_var.set(f"{y_min_default:.1f}")
+            self._ymax_var.set(f"{y_max_default:.1f}")
+            self._logx_var.set(False)
+            self._logy_var.set(True)
+            self._show_markers_var.set(True)
+            self._xlabel_var.set(defaults["x_label"])
+            self._ylabel_var.set(defaults["y_label"])
+            self._title_var.set(defaults["title"])
+            self._schedule_render()
+
+        self._reset_controls = _reset_controls
+        ttk.Button(extras_frame, text="Reset", command=_reset_controls).pack(side=tk.LEFT)
+
+        # Auto-render on every keystroke / paste in any entry field
+        def _on_any_change(*_):
+            self._schedule_render()
+
+        for _var in (self._xmin_var, self._xmax_var,
+                     self._ymin_var, self._ymax_var,
+                     self._xlabel_var, self._ylabel_var, self._title_var):
+            _var.trace_add("write", _on_any_change)
 
     def render_preview(self, obj) -> None:
         """Render a simple preview of the histogram onto the bottom canvas.
@@ -614,10 +640,8 @@ class HistogramPreviewRenderer:
         except Exception:
             win_w, win_h = 800, 600
 
-        # Compute explicit target sizes from the window: width uses ~80%
-        # of window width, height uses at most 50% of window height.
-        w = int(max(160, win_w * 0.8))
-        h = int(max(120, win_h * 0.5))
+        # Compute explicit target sizes via the module helper
+        w, h = HistogramControlsModule.compute_preview_size(win_w, win_h)
 
         options = HistogramControlsModule.build_render_options(
             w, h,

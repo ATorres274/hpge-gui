@@ -577,6 +577,29 @@ class TestHistogramControlsModule(unittest.TestCase):
                              min_val=0.0, max_limit=3000.0)
         self.assertLessEqual(result, 3000.0)
 
+    def test_clamp_min_log_mode_sub1_scrolls_up_additive(self):
+        """In log mode, scrolling up from a sub-1 value uses +1.0 additive step."""
+        M = self._module()
+        result = M.clamp_min(0.5, 0.0, direction_down=False,
+                             min_limit=0.1, max_val=3000.0, log_mode=True)
+        # 0.5 + 1.0 = 1.5, not the crawling 0.5 * 1.122 = 0.561
+        self.assertAlmostEqual(result, 1.5, places=1)
+
+    def test_clamp_min_log_mode_sub1_scrolls_down_additive(self):
+        """In log mode, scrolling down from a sub-1 value uses -1.0 additive step."""
+        M = self._module()
+        result = M.clamp_min(0.8, 0.0, direction_down=True,
+                             min_limit=0.1, max_val=3000.0, log_mode=True)
+        # 0.8 - 1.0 = -0.2 → clamped to 0.1 (min_limit)
+        self.assertAlmostEqual(result, 0.1, places=1)
+
+    def test_clamp_max_log_mode_sub1_uses_additive_step(self):
+        """In log mode, max entry in sub-1 zone uses ±1.0 additive step."""
+        M = self._module()
+        result = M.clamp_max(0.5, 0.0, direction_down=False,
+                             min_val=0.1, max_limit=float("inf"), log_mode=True)
+        self.assertAlmostEqual(result, 1.5, places=1)
+
     def test_clamp_min_log_mode_multiplies(self):
         """In log mode, scrolling up multiplies the value."""
         M = self._module()

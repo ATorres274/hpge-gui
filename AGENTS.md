@@ -92,15 +92,19 @@ Use the appropriate level:
 ## Running Tests
 
 ```bash
+# Install required system / Python dependencies
+sudo apt-get install -y xvfb python3-tk   # headless display + Tk
+pip3 install Pillow                        # PIL used by screenshot helpers
+
 # Start a virtual framebuffer (required for headless tkinter)
 Xvfb :99 -screen 0 1024x768x24 &
 export DISPLAY=:99
 
-# Run the full test suite
-python -m pytest tests/ -v
+# Run the full test suite (use python3 explicitly)
+python3 -m pytest tests/ -v
 
-# Run only the Simple Test 1 workflow tests
-python -m pytest tests/test_simple_test_1.py -v
+# Run only the histogram workflow tests
+python3 -m pytest tests/test_simple_test_1.py -v
 ```
 
 Tests **must not** require ROOT to be installed — stub it via:
