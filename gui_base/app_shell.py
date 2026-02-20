@@ -436,21 +436,36 @@ class RootBrowserApp(tk.Tk):
                 exception=e
             )
 
-    def _on_histogram_closed(self, remaining_count: int) -> None:
+    def _on_histogram_closed(self, remaining_count: int, histogram_list: list = None) -> None:
         """Callback from histogram tab when a histogram is closed.
-        
-        App decides what to show next: another histogram or the browser.
+
+        Updates the dropdown with remaining histograms.  If another histogram
+        is still being displayed it updates the combobox selection to match it.
+        If no histograms remain, returns the user to the browser.
         """
         try:
-            if remaining_count > 0:
-                # Show first remaining histogram
-                if hasattr(self.histogram_tab, '_open_histograms') and self.histogram_tab._open_histograms:
-                    tab_key, _, _ = self.histogram_tab._open_histograms[0]
-                    self._histogram_combo.current(0)
-                    self._show_histogram(tab_key)
-            else:
-                # No histograms left, show browser
+            # Update the dropdown values to reflect remaining histograms
+            if histogram_list is not None:
+                self.update_histogram_dropdown(histogram_list)
+
+            if not self._hist_container.winfo_ismapped():
+                # No histogram is visible – go to browser (clears combo selection)
                 self._focus_browser()
+            else:
+                # A histogram is still on screen; sync the combo selection to it
+                current_key = (
+                    self.histogram_tab.current_histogram_key
+                    if hasattr(self, 'histogram_tab')
+                    else None
+                )
+                if current_key and histogram_list:
+                    for idx, (k, _) in enumerate(histogram_list):
+                        if k == current_key:
+                            try:
+                                self._histogram_combo.current(idx)
+                            except Exception:
+                                pass
+                            break
         except Exception as e:
             self._error_dispatcher.emit(
                 ErrorLevel.WARNING,
