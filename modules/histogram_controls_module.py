@@ -278,5 +278,15 @@ class HistogramControlsModule:
         h = int(max(120, win_h * 0.5))
         return w, h
 
+    @staticmethod
+    def detect_scroll_direction(event) -> bool:
+        """Return ``True`` if the scroll event represents a downward scroll.
+
+        Handles both Windows/macOS (``event.delta``) and Linux
+        (``event.num``) scroll events.  ``True`` means *decrease* (scroll
+        down / ``Button-5`` / negative delta); ``False`` means *increase*.
+        """
+        return event.num == 5 or (hasattr(event, "delta") and event.delta < 0)
+
 
 __all__ = ["HistogramControlsModule"]

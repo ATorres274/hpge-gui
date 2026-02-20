@@ -7,9 +7,6 @@ manual peak helpers for use by the histogram tab.
 
 from __future__ import annotations
 
-import tkinter as tk
-from datetime import datetime
-from tkinter import ttk
 from typing import Any
 
 
@@ -30,22 +27,24 @@ class PeakFinderModule:
         self.manual = PeakSearchManual()
         self.current_hist = None
         self.peaks: list[dict] = []
-        self._peaks_tree: ttk.Treeview | None = None
-        self._peaks_text: tk.Text | None = None
-        self._manual_peak_var: tk.StringVar | None = None
+        self._peaks_tree: Any | None = None
+        self._peaks_text: Any | None = None
+        self._manual_peak_var: Any | None = None
         self._render_callback = None
         self.fitting_feature = None
         self.parent_app = None
         self.host_notebook = None
 
-    def setup(self, app, peaks_widget: Any, manual_peak_var: tk.StringVar | None) -> None:
+    def setup(self, app: Any, peaks_widget: Any, manual_peak_var: Any) -> None:
         """Attach UI widgets (Treeview or fallback Text widget) and manual var.
 
         The UI remains owned by the caller; this module only stores
         references and populates the view when `self._update_peaks_display` is called.
         """
         self.parent_app = app
-        if isinstance(peaks_widget, ttk.Treeview):
+        # Accept any widget — Treeview is detected by the presence of
+        # ``get_children``; anything else is treated as a text widget.
+        if hasattr(peaks_widget, "get_children"):
             self._peaks_tree = peaks_widget
         else:
             self._peaks_text = peaks_widget
@@ -124,10 +123,10 @@ class PeakFinderModule:
             text = "\n".join(auto_lines).strip() if auto_lines else "No peaks found"
             if self._peaks_text is not None:
                 try:
-                    self._peaks_text.config(state=tk.NORMAL)
-                    self._peaks_text.delete("1.0", tk.END)
-                    self._peaks_text.insert(tk.END, text)
-                    self._peaks_text.config(state=tk.DISABLED)
+                    self._peaks_text.config(state="normal")
+                    self._peaks_text.delete("1.0", "end")
+                    self._peaks_text.insert("end", text)
+                    self._peaks_text.config(state="disabled")
                 except Exception:
                     pass
         # Notify UI to re-render preview when peaks change
