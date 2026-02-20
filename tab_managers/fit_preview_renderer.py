@@ -31,7 +31,7 @@ from tkinter import ttk
 
 from modules.error_dispatcher import get_dispatcher, ErrorLevel
 from modules.fit_module import FitModule
-from features.fit_feature import FitFeature
+from features.fit_feature import FitFeature, FIT_FUNCTIONS
 
 
 class FitPreviewRenderer:
@@ -209,9 +209,9 @@ class FitPreviewRenderer:
         fit_func_combo = ttk.Combobox(
             controls,
             textvariable=ui_state["fit_func_var"],
-            values=["gaus", "landau", "expo", "pol1", "pol2", "pol3"],
+            values=FIT_FUNCTIONS,
             state="readonly",
-            width=12,
+            width=14,
         )
         fit_func_combo.grid(row=0, column=1, sticky="w", padx=(0, 12))
         fit_func_combo.bind(

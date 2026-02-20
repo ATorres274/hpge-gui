@@ -36,18 +36,29 @@ class TestGetParamLabels(unittest.TestCase):
         self.assertIn("Mean", labels[1])
         self.assertIn("Sigma", labels[2])
 
-    def test_landau_returns_three_labels(self):
-        labels = FitFeature.get_param_labels("landau")
-        self.assertEqual(len(labels), 3)
-        self.assertIn("Width", labels[2])
+    def test_gaus_pol1_returns_five_labels(self):
+        labels = FitFeature.get_param_labels("gaus+pol1")
+        self.assertEqual(len(labels), 5)
+        self.assertIn("Bkg", labels[3])
 
-    def test_expo_returns_two_labels(self):
-        labels = FitFeature.get_param_labels("expo")
-        self.assertEqual(len(labels), 2)
+    def test_gaus_pol2_returns_six_labels(self):
+        labels = FitFeature.get_param_labels("gaus+pol2")
+        self.assertEqual(len(labels), 6)
 
-    def test_pol3_returns_four_labels(self):
-        labels = FitFeature.get_param_labels("pol3")
+    def test_gaus_erf_returns_four_labels(self):
+        labels = FitFeature.get_param_labels("gaus+erf")
         self.assertEqual(len(labels), 4)
+        self.assertIn("Step", labels[3])
+
+    def test_2gaus_returns_six_labels(self):
+        labels = FitFeature.get_param_labels("2gaus")
+        self.assertEqual(len(labels), 6)
+        self.assertIn("1", labels[0])
+        self.assertIn("2", labels[3])
+
+    def test_2gaus_pol1_returns_eight_labels(self):
+        labels = FitFeature.get_param_labels("2gaus+pol1")
+        self.assertEqual(len(labels), 8)
 
     def test_unknown_function_returns_empty(self):
         self.assertEqual(FitFeature.get_param_labels("unknown_func"), [])
@@ -69,9 +80,13 @@ class TestGetParamDisplayNames(unittest.TestCase):
         names = FitFeature.get_param_display_names("gaus")
         self.assertEqual(names, ["Constant", "Mean", "Sigma"])
 
-    def test_pol2_display_names(self):
-        names = FitFeature.get_param_display_names("pol2")
-        self.assertEqual(names, ["a0", "a1", "a2"])
+    def test_gaus_pol1_display_names(self):
+        names = FitFeature.get_param_display_names("gaus+pol1")
+        self.assertEqual(names, ["Constant", "Mean", "Sigma", "Bkg a0", "Bkg a1"])
+
+    def test_2gaus_display_names(self):
+        names = FitFeature.get_param_display_names("2gaus")
+        self.assertEqual(len(names), 6)
 
     def test_unknown_returns_empty(self):
         self.assertEqual(FitFeature.get_param_display_names("bad"), [])
@@ -131,26 +146,28 @@ class TestDefaultFitParams(unittest.TestCase):
         params = FitFeature.default_fit_params("gaus", self._make_hist(), 100.0, 10.0, 90.0, 110.0)
         self.assertEqual(len(params), 3)
 
-    def test_landau_returns_three_params(self):
-        params = FitFeature.default_fit_params("landau", self._make_hist(), 100.0, 10.0, 90.0, 110.0)
-        self.assertEqual(len(params), 3)
+    def test_gaus_pol1_returns_five_params(self):
+        params = FitFeature.default_fit_params("gaus+pol1", self._make_hist(), 100.0, 10.0, 90.0, 110.0)
+        self.assertEqual(len(params), 5)
+        self.assertAlmostEqual(params[3], 0.0)  # background a0
+        self.assertAlmostEqual(params[4], 0.0)  # background a1
 
-    def test_expo_returns_two_params(self):
-        params = FitFeature.default_fit_params("expo", self._make_hist(), None, None, 0.0, 1000.0)
-        self.assertEqual(len(params), 2)
-        self.assertAlmostEqual(params[0], 0.0)
+    def test_gaus_pol2_returns_six_params(self):
+        params = FitFeature.default_fit_params("gaus+pol2", self._make_hist(), 100.0, 10.0, 90.0, 110.0)
+        self.assertEqual(len(params), 6)
 
-    def test_pol1_returns_two_params(self):
-        params = FitFeature.default_fit_params("pol1", self._make_hist(), None, None, 0.0, 500.0)
-        self.assertEqual(len(params), 2)
-
-    def test_pol2_returns_three_params(self):
-        params = FitFeature.default_fit_params("pol2", self._make_hist(), None, None, 0.0, 500.0)
-        self.assertEqual(len(params), 3)
-
-    def test_pol3_returns_four_params(self):
-        params = FitFeature.default_fit_params("pol3", self._make_hist(), None, None, 0.0, 500.0)
+    def test_gaus_erf_returns_four_params(self):
+        params = FitFeature.default_fit_params("gaus+erf", self._make_hist(), 100.0, 10.0, 90.0, 110.0)
         self.assertEqual(len(params), 4)
+        self.assertGreater(params[3], 0.0)  # step amplitude > 0
+
+    def test_2gaus_returns_six_params(self):
+        params = FitFeature.default_fit_params("2gaus", self._make_hist(), 100.0, 10.0, 90.0, 110.0)
+        self.assertEqual(len(params), 6)
+
+    def test_2gaus_pol1_returns_eight_params(self):
+        params = FitFeature.default_fit_params("2gaus+pol1", self._make_hist(), 100.0, 10.0, 90.0, 110.0)
+        self.assertEqual(len(params), 8)
 
     def test_unknown_returns_empty(self):
         params = FitFeature.default_fit_params("custom_func", self._make_hist(), None, None, 0.0, 100.0)
@@ -262,7 +279,7 @@ class TestFormatFitResults(unittest.TestCase):
 
     def _make_cached(self, fit_func="gaus", params=None, errors=None, chi2=1.5, ndf=3, status=0):
         if params is None:
-            params = [100.0, 500.0, 5.0] if fit_func == "gaus" else [100.0, 0.0]
+            params = [100.0, 500.0, 5.0] if fit_func.startswith("gaus") else [100.0, 0.0]
         if errors is None:
             errors = [1.0] * len(params)
         return {
@@ -284,25 +301,33 @@ class TestFormatFitResults(unittest.TestCase):
         self.assertIn("Centroid", text)
         self.assertIn("Area", text)
 
-    def test_landau_includes_most_probable_value(self):
-        cached = self._make_cached("landau", params=[100.0, 300.0, 15.0])
-        text = FitFeature.format_fit_results("landau", "SQ", cached)
-        self.assertIn("Most Probable Value", text)
-        self.assertIn("Width", text)
+    def test_gaus_pol1_includes_fwhm_centroid_area(self):
+        cached = self._make_cached("gaus+pol1", params=[100.0, 500.0, 5.0, 0.0, 0.0])
+        text = FitFeature.format_fit_results("gaus+pol1", "SQ", cached)
+        self.assertIn("FWHM", text)
+        self.assertIn("Centroid", text)
+        self.assertIn("Area", text)
 
-    def test_expo_no_peak_annotations(self):
-        cached = self._make_cached("expo", params=[1.0, -0.001])
-        text = FitFeature.format_fit_results("expo", "SQ", cached)
+    def test_2gaus_includes_per_peak_annotations(self):
+        params = [100.0, 500.0, 5.0, 80.0, 510.0, 4.5]
+        cached = self._make_cached("2gaus", params=params)
+        text = FitFeature.format_fit_results("2gaus", "SQ", cached)
+        self.assertIn("Peak 1", text)
+        self.assertIn("Peak 2", text)
+
+    def test_unknown_func_no_peak_annotations(self):
+        cached = self._make_cached("custom_func", params=[1.0, -0.001])
+        text = FitFeature.format_fit_results("custom_func", "SQ", cached)
         self.assertNotIn("Peak Annotations", text)
 
     def test_reduced_chi_square_non_zero_ndf(self):
-        cached = self._make_cached(chi2=2.5, ndf=5, params=[1.0, 0.0])
-        text = FitFeature.format_fit_results("pol1", "SQ", cached)
+        cached = {"chi2": 2.5, "ndf": 5, "status": 0, "parameters": [1.0, 0.0], "errors": [0.1, 0.1]}
+        text = FitFeature.format_fit_results("gaus+pol1", "SQ", cached)
         self.assertIn("0.5", text)  # 2.5 / 5 = 0.5
 
     def test_zero_ndf_shows_na(self):
-        cached = self._make_cached(chi2=2.5, ndf=0, params=[1.0, 0.0])
-        text = FitFeature.format_fit_results("pol1", "SQ", cached)
+        cached = {"chi2": 2.5, "ndf": 0, "status": 0, "parameters": [1.0, 0.0], "errors": [0.1, 0.1]}
+        text = FitFeature.format_fit_results("gaus+pol1", "SQ", cached)
         self.assertIn("N/A", text)
 
     def test_fit_function_appears_in_output(self):

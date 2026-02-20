@@ -17,6 +17,32 @@ from features.feature import Feature
 _FWHM_TO_SIGMA: float = 2.355      # 2 * sqrt(2 * ln 2)  — converts FWHM to σ
 _SQRT_2PI: float = 2.506628        # sqrt(2π)             — Gaussian normalisation
 
+# ROOT TF1 formula strings for photopeak fit models.
+# Compound models need explicit parameter-group indexing so ROOT builds
+# the correct TF1.
+_FIT_FORMULAS: dict[str, str] = {
+    # Pure Gaussian — baseline photopeak model
+    "gaus":       "gaus",
+    # Gaussian + polynomial background
+    "gaus+pol1":  "gaus(0)+pol1(3)",
+    "gaus+pol2":  "gaus(0)+pol2(3)",
+    # Gaussian + error-function step background (Compton-edge correction)
+    "gaus+erf":   "gaus(0)+[3]*TMath::Erfc((x-[1])/(sqrt(2)*[2]))*0.5",
+    # Double Gaussian — overlapping/doublet photopeaks
+    "2gaus":      "gaus(0)+gaus(3)",
+    "2gaus+pol1": "gaus(0)+gaus(3)+pol1(6)",
+}
+
+# All supported fit functions as an ordered list for UI dropdowns.
+FIT_FUNCTIONS: list[str] = [
+    "gaus",
+    "gaus+pol1",
+    "gaus+pol2",
+    "gaus+erf",
+    "2gaus",
+    "2gaus+pol1",
+]
+
 
 class FitFeature(Feature):
     """Pure-computation feature for ROOT histogram fitting.
@@ -30,22 +56,29 @@ class FitFeature(Feature):
 
     # Parameter label strings shown in the controls row of each fit card.
     _PARAM_LABELS: dict[str, list[str]] = {
-        "gaus":   ["Constant (p0)", "Mean (p1)", "Sigma (p2)"],
-        "landau": ["Constant (p0)", "Mean (p1)", "Width (p2)"],
-        "expo":   ["Constant (p0)", "Slope (p1)"],
-        "pol1":   ["a0 (p0)", "a1 (p1)"],
-        "pol2":   ["a0 (p0)", "a1 (p1)", "a2 (p2)"],
-        "pol3":   ["a0 (p0)", "a1 (p1)", "a2 (p2)", "a3 (p3)"],
+        "gaus":       ["Constant (p0)", "Mean (p1)", "Sigma (p2)"],
+        "gaus+pol1":  ["Constant (p0)", "Mean (p1)", "Sigma (p2)",
+                       "Bkg a0 (p3)", "Bkg a1 (p4)"],
+        "gaus+pol2":  ["Constant (p0)", "Mean (p1)", "Sigma (p2)",
+                       "Bkg a0 (p3)", "Bkg a1 (p4)", "Bkg a2 (p5)"],
+        "gaus+erf":   ["Constant (p0)", "Mean (p1)", "Sigma (p2)",
+                       "Step Amp (p3)"],
+        "2gaus":      ["Const1 (p0)", "Mean1 (p1)", "Sigma1 (p2)",
+                       "Const2 (p3)", "Mean2 (p4)", "Sigma2 (p5)"],
+        "2gaus+pol1": ["Const1 (p0)", "Mean1 (p1)", "Sigma1 (p2)",
+                       "Const2 (p3)", "Mean2 (p4)", "Sigma2 (p5)",
+                       "Bkg a0 (p6)", "Bkg a1 (p7)"],
     }
 
     # Short parameter names used when displaying fit results.
     _PARAM_DISPLAY: dict[str, list[str]] = {
-        "gaus":   ["Constant", "Mean", "Sigma"],
-        "landau": ["Constant", "Mean", "Width"],
-        "expo":   ["Constant", "Slope"],
-        "pol1":   ["a0", "a1"],
-        "pol2":   ["a0", "a1", "a2"],
-        "pol3":   ["a0", "a1", "a2", "a3"],
+        "gaus":       ["Constant", "Mean", "Sigma"],
+        "gaus+pol1":  ["Constant", "Mean", "Sigma", "Bkg a0", "Bkg a1"],
+        "gaus+pol2":  ["Constant", "Mean", "Sigma", "Bkg a0", "Bkg a1", "Bkg a2"],
+        "gaus+erf":   ["Constant", "Mean", "Sigma", "Step Amp"],
+        "2gaus":      ["Const1", "Mean1", "Sigma1", "Const2", "Mean2", "Sigma2"],
+        "2gaus+pol1": ["Const1", "Mean1", "Sigma1", "Const2", "Mean2", "Sigma2",
+                       "Bkg a0", "Bkg a1"],
     }
 
     @staticmethod
@@ -57,6 +90,17 @@ class FitFeature(Feature):
     def get_param_display_names(fit_func: str) -> list[str]:
         """Return short parameter names used in the results panel."""
         return list(FitFeature._PARAM_DISPLAY.get(fit_func, []))
+
+    @staticmethod
+    def get_fit_formula(fit_func: str) -> str:
+        """Return the ROOT TF1 formula string for *fit_func*.
+
+        Compound photopeak models like ``"gaus+pol1"`` require explicit
+        parameter-group indexing (e.g. ``"gaus(0)+pol1(3)"``).  Simple
+        named ROOT functions (``"gaus"``, ``"expo"``, …) pass through
+        unchanged.
+        """
+        return _FIT_FORMULAS.get(fit_func, fit_func)
 
     @staticmethod
     def get_fit_range(
@@ -92,7 +136,7 @@ class FitFeature(Feature):
         Gaussian fits.
 
         Args:
-            fit_func: One of gaus, landau, expo, pol1, pol2, pol3.
+            fit_func: One of gaus, gaus+pol1, gaus+pol2, gaus+erf.
             hist: ROOT TH1 histogram (used to estimate mean and peak height).
             energy: Peak location hint in keV (``None`` → use histogram mean).
             width: Peak width hint in keV (``None`` → auto-estimate).
@@ -127,16 +171,22 @@ class FitFeature(Feature):
 
         if fit_func == "gaus":
             return [peak_height, peak_x, sigma]
-        if fit_func == "landau":
-            return [peak_height, peak_x, float(width)]
-        if fit_func == "expo":
-            return [0.0, -0.001]
-        if fit_func == "pol1":
-            return [peak_height, 0.0]
-        if fit_func == "pol2":
-            return [peak_height, 0.0, 0.0]
-        if fit_func == "pol3":
-            return [peak_height, 0.0, 0.0, 0.0]
+        # Photopeak compound models: Gaussian params + background
+        if fit_func == "gaus+pol1":
+            return [peak_height, peak_x, sigma, 0.0, 0.0]
+        if fit_func == "gaus+pol2":
+            return [peak_height, peak_x, sigma, 0.0, 0.0, 0.0]
+        if fit_func == "gaus+erf":
+            # Step amplitude seeded at half the peak height
+            return [peak_height, peak_x, sigma, max(peak_height * 0.5, 1.0)]
+        # Double-Gaussian models: seed second peak offset by one sigma
+        if fit_func == "2gaus":
+            return [peak_height, peak_x, sigma,
+                    peak_height * 0.5, peak_x + sigma, sigma]
+        if fit_func == "2gaus+pol1":
+            return [peak_height, peak_x, sigma,
+                    peak_height * 0.5, peak_x + sigma, sigma,
+                    0.0, 0.0]
         return []
 
     @staticmethod
@@ -220,7 +270,8 @@ class FitFeature(Feature):
                             pass
 
                     fit_name = f"fit_{fit_func}_{fit_id}_{fit_epoch}"
-                    fit_obj = root.TF1(fit_name, fit_func, xmin, xmax)
+                    formula = FitFeature.get_fit_formula(fit_func)
+                    fit_obj = root.TF1(fit_name, formula, xmin, xmax)
 
                     if not params:
                         params = FitFeature.default_fit_params(
@@ -340,30 +391,35 @@ class FitFeature(Feature):
             name = names[i] if i < len(names) else f"p[{i}]"
             lines.append(f"  {name} = {param:.6f} ± {error:.6f}")
 
-        if fit_func == "gaus" and len(parameters) >= 3:
-            mean = parameters[1]
-            sigma = parameters[2]
-            fwhm = 2.355 * sigma
-            constant = parameters[0]
-            area = constant * sigma * _SQRT_2PI
-            lines += [
-                "",
-                "Peak Annotations:",
-                f"  FWHM: {fwhm:.3f} keV",
-                f"  Centroid: {mean:.3f} keV",
-                f"  Area: {area:.1f}",
-            ]
-        elif fit_func == "landau" and len(parameters) >= 3:
-            mean = parameters[1]
-            width = parameters[2]
-            lines += [
-                "",
-                "Peak Annotations:",
-                f"  Most Probable Value: {mean:.3f} keV",
-                f"  Width: {width:.3f} keV",
-            ]
+        if fit_func == "gaus" or fit_func.startswith("gaus+"):
+            if len(parameters) >= 3:
+                mean = parameters[1]
+                sigma = parameters[2]
+                fwhm = _FWHM_TO_SIGMA * sigma
+                constant = parameters[0]
+                area = constant * sigma * _SQRT_2PI
+                lines += [
+                    "",
+                    "Peak Annotations:",
+                    f"  FWHM: {fwhm:.3f} keV",
+                    f"  Centroid: {mean:.3f} keV",
+                    f"  Area: {area:.1f}",
+                ]
+        elif fit_func in ("2gaus", "2gaus+pol1"):
+            if len(parameters) >= 6:
+                for i, label in enumerate(("Peak 1", "Peak 2")):
+                    c, m, s = parameters[i * 3], parameters[i * 3 + 1], parameters[i * 3 + 2]
+                    fwhm = _FWHM_TO_SIGMA * s
+                    area = c * s * _SQRT_2PI
+                    if i == 0:
+                        lines += ["", "Peak Annotations:"]
+                    lines += [
+                        f"  {label}  Centroid: {m:.3f} keV,"
+                        f"  FWHM: {fwhm:.3f} keV,"
+                        f"  Area: {area:.1f}",
+                    ]
 
         return "\n".join(lines)
 
 
-__all__ = ["FitFeature"]
+__all__ = ["FitFeature", "FIT_FUNCTIONS"]
