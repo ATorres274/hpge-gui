@@ -1,0 +1,2 @@
+[console_scripts]
+pyHPGeGui = main:main
