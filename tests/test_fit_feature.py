@@ -1,7 +1,7 @@
-"""Unit tests for features.fit_feature.FitFeature and modules.fit_module.FittingFeature.
+"""Unit tests for features.fit_feature.FitFeature and modules.fit_module.FitModule.
 
-These tests cover the refactored pure-computation feature and the callback
-wiring added to FittingFeature.  No ROOT or tkinter installation is required.
+These tests cover the pure-computation feature and the domain module.
+No ROOT or tkinter installation is required.
 """
 
 from __future__ import annotations
@@ -327,88 +327,249 @@ class TestFormatFitResults(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# FittingFeature (fit_module) callback wiring
+# FitModule (modules/fit_module.py) — domain API tests
 # ---------------------------------------------------------------------------
 
-class TestFittingFeatureCallbacks(unittest.TestCase):
+class TestFitModule(unittest.TestCase):
+    """Tests for FitModule: the pure-domain module with no tkinter code."""
+
+    def _make_module(self, on_save=None, on_fit_completed=None):
+        from modules.fit_module import FitModule
+        return FitModule(on_save=on_save, on_fit_completed=on_fit_completed)
+
+    # Construction -----------------------------------------------------------
 
     def test_default_construction_no_callbacks(self):
-        from modules.fit_module import FittingFeature
-        feature = FittingFeature()
-        self.assertIsNone(feature._on_save)
-        self.assertIsNone(feature._on_preview_render)
+        m = self._make_module()
+        self.assertIsNone(m._on_save)
+        self.assertIsNone(m._on_fit_completed)
 
     def test_callbacks_stored_at_construction(self):
-        from modules.fit_module import FittingFeature
         on_save = MagicMock()
-        on_preview = MagicMock()
-        feature = FittingFeature(on_save=on_save, on_preview_render=on_preview)
-        self.assertIs(feature._on_save, on_save)
-        self.assertIs(feature._on_preview_render, on_preview)
+        on_done = MagicMock()
+        m = self._make_module(on_save=on_save, on_fit_completed=on_done)
+        self.assertIs(m._on_save, on_save)
+        self.assertIs(m._on_fit_completed, on_done)
 
-    def test_invoke_save_calls_callback(self):
-        from modules.fit_module import FittingFeature
-        on_save = MagicMock()
-        feature = FittingFeature(on_save=on_save)
-        fit_state = {"cached_results": {"status": 0}}
-        feature._invoke_save(fit_state)
-        on_save.assert_called_once_with(fit_state)
+    def test_backward_compatible_alias(self):
+        """FittingFeature must still import and be the same class as FitModule."""
+        from modules.fit_module import FittingFeature, FitModule
+        self.assertIs(FittingFeature, FitModule)
 
-    def test_invoke_save_no_callback_does_not_raise(self):
-        from modules.fit_module import FittingFeature
-        feature = FittingFeature()
-        # Should not raise even when _on_save is None
-        feature._invoke_save({"cached_results": None})
+    # set_histogram ----------------------------------------------------------
 
-    def test_on_selection_stores_histogram(self):
-        from modules.fit_module import FittingFeature
-        feature = FittingFeature()
+    def test_set_histogram_stores_hist(self):
+        m = self._make_module()
         hist = MagicMock()
-        hist.GetName.return_value = "test_h"
-        clone = MagicMock()
-        hist.Clone.return_value = clone
-        feature.on_selection(None, hist, "/path/to/hist")
-        self.assertIs(feature.current_hist, hist)
+        hist.GetName.return_value = "h"
+        hist.Clone.return_value = MagicMock()
+        m.set_histogram(hist)
+        self.assertIs(m.current_hist, hist)
 
-    def test_on_selection_clones_histogram(self):
-        from modules.fit_module import FittingFeature
-        feature = FittingFeature()
+    def test_set_histogram_creates_clone(self):
+        m = self._make_module()
         hist = MagicMock()
         hist.GetName.return_value = "h"
         clone = MagicMock()
         hist.Clone.return_value = clone
-        feature.on_selection(None, hist, "/path")
-        self.assertIs(feature.current_hist_clone, clone)
+        m.set_histogram(hist)
+        self.assertIs(m.current_hist_clone, clone)
 
-    def test_on_selection_none_clears_clone(self):
-        from modules.fit_module import FittingFeature
-        feature = FittingFeature()
-        feature.current_hist_clone = MagicMock()
-        feature.on_selection(None, None, "")
-        self.assertIsNone(feature.current_hist_clone)
+    def test_set_histogram_none_clears_both(self):
+        m = self._make_module()
+        m.current_hist = MagicMock()
+        m.current_hist_clone = MagicMock()
+        m.set_histogram(None)
+        self.assertIsNone(m.current_hist)
+        self.assertIsNone(m.current_hist_clone)
 
-    def test_get_fit_range_for_tab_delegates_to_fit_feature(self):
-        from modules.fit_module import FittingFeature
-        feature = FittingFeature()
-        energy_var = MagicMock()
-        energy_var.get.return_value = "100.0"
-        width_var = MagicMock()
-        width_var.get.return_value = "20.0"
-        fit_state = {"energy_var": energy_var, "width_var": width_var}
-        xmin, xmax = feature._get_fit_range_for_tab(fit_state)
-        self.assertAlmostEqual(xmin, 90.0)
-        self.assertAlmostEqual(xmax, 110.0)
+    # set_peaks --------------------------------------------------------------
 
-    def test_get_fit_range_empty_vars_returns_none(self):
-        from modules.fit_module import FittingFeature
-        feature = FittingFeature()
-        energy_var = MagicMock()
-        energy_var.get.return_value = ""
-        width_var = MagicMock()
-        width_var.get.return_value = ""
-        fit_state = {"energy_var": energy_var, "width_var": width_var}
-        result = feature._get_fit_range_for_tab(fit_state)
-        self.assertEqual(result, (None, None))
+    def test_set_peaks_stores_list(self):
+        m = self._make_module()
+        peaks = [{"energy": 100.0, "counts": 50}, {"energy": 200.0, "counts": 30}]
+        m.set_peaks(peaks)
+        self.assertEqual(m.detected_peaks, peaks)
+
+    def test_set_peaks_none_stores_empty(self):
+        m = self._make_module()
+        m.set_peaks(None)
+        self.assertEqual(m.detected_peaks, [])
+
+    # estimate_peak_width ----------------------------------------------------
+
+    def test_estimate_peak_width_five_percent(self):
+        self.assertAlmostEqual(FitModule_estimate(200.0), 10.0)
+        self.assertAlmostEqual(FitModule_estimate(1000.0), 50.0)
+
+    # add_fit / remove_fit ---------------------------------------------------
+
+    def test_add_fit_returns_incremental_id(self):
+        m = self._make_module()
+        id1 = m.add_fit()
+        id2 = m.add_fit()
+        self.assertEqual(id2, id1 + 1)
+
+    def test_add_fit_stores_domain_state(self):
+        m = self._make_module()
+        fit_id = m.add_fit(energy=300.0, width=15.0, peak_idx=2)
+        state = m.get_fit_state(fit_id)
+        self.assertIsNotNone(state)
+        self.assertAlmostEqual(state["energy"], 300.0)
+        self.assertAlmostEqual(state["width"], 15.0)
+        self.assertEqual(state["peak_idx"], 2)
+        self.assertEqual(state["fit_func"], "gaus")
+
+    def test_add_fit_no_tkinter_objects_in_state(self):
+        """fit_state must contain only plain Python types (no tkinter Vars)."""
+        import tkinter
+        m = self._make_module()
+        fit_id = m.add_fit(energy=100.0, width=10.0)
+        state = m.get_fit_state(fit_id)
+        for key, value in state.items():
+            # None, str, int, float, bool, list, dict are all OK
+            self.assertNotIsInstance(
+                value,
+                tkinter.Variable,
+                msg=f"fit_state['{key}'] is a tkinter Variable — must be a plain Python type",
+            )
+
+    def test_remove_fit_deletes_state(self):
+        m = self._make_module()
+        fit_id = m.add_fit()
+        m.remove_fit(fit_id)
+        self.assertIsNone(m.get_fit_state(fit_id))
+
+    def test_list_fits_empty(self):
+        m = self._make_module()
+        self.assertEqual(m.list_fits(), [])
+
+    def test_list_fits_returns_id_name_pairs(self):
+        m = self._make_module()
+        fid1 = m.add_fit()
+        fid2 = m.add_fit(energy=500.0)
+        fits = m.list_fits()
+        self.assertEqual(len(fits), 2)
+        ids = [f[0] for f in fits]
+        self.assertIn(fid1, ids)
+        self.assertIn(fid2, ids)
+
+    def test_get_fit_display_name_with_energy(self):
+        m = self._make_module()
+        fit_id = m.add_fit(energy=511.0)
+        name = m.get_fit_display_name(fit_id)
+        self.assertIn("511", name)
+
+    def test_get_fit_display_name_without_energy(self):
+        m = self._make_module()
+        fit_id = m.add_fit()
+        name = m.get_fit_display_name(fit_id)
+        self.assertIn(str(fit_id), name)
+
+    # update_fit_params -------------------------------------------------------
+
+    def test_update_fit_params_sets_domain_state(self):
+        m = self._make_module()
+        fit_id = m.add_fit()
+        m.update_fit_params(
+            fit_id,
+            fit_func="landau",
+            energy=250.0,
+            width=20.0,
+            params=[1.0, 2.0, 3.0],
+            fixed_params=[False, True, False],
+            fit_options="SQ",
+        )
+        state = m.get_fit_state(fit_id)
+        self.assertEqual(state["fit_func"], "landau")
+        self.assertAlmostEqual(state["energy"], 250.0)
+        self.assertEqual(state["params"], [1.0, 2.0, 3.0])
+        self.assertEqual(state["fixed_params"], [False, True, False])
+
+    def test_update_fit_params_unknown_id_does_not_raise(self):
+        m = self._make_module()
+        m.update_fit_params(
+            999,
+            fit_func="gaus",
+            energy=None,
+            width=None,
+            params=[],
+            fixed_params=[],
+            fit_options="SQ",
+        )
+
+    # invoke_save -------------------------------------------------------------
+
+    def test_invoke_save_calls_callback_with_fit_state(self):
+        on_save = MagicMock()
+        m = self._make_module(on_save=on_save)
+        fit_id = m.add_fit(energy=100.0)
+        m.invoke_save(fit_id)
+        on_save.assert_called_once()
+        called_state = on_save.call_args[0][0]
+        self.assertEqual(called_state["fit_id"], fit_id)
+
+    def test_invoke_save_no_callback_does_not_raise(self):
+        m = self._make_module()
+        fit_id = m.add_fit()
+        m.invoke_save(fit_id)  # no on_save — must not raise
+
+    def test_invoke_save_unknown_id_does_not_raise(self):
+        on_save = MagicMock()
+        m = self._make_module(on_save=on_save)
+        m.invoke_save(9999)
+        on_save.assert_not_called()
+
+    # perform_fit (mocked ROOT) -----------------------------------------------
+
+    def test_perform_fit_without_histogram_returns_error(self):
+        m = self._make_module()
+        fit_id = m.add_fit(energy=100.0, width=10.0)
+        result = m.perform_fit(fit_id, MagicMock())
+        self.assertIn("error", result)
+
+    def test_perform_fit_unknown_id_returns_error(self):
+        m = self._make_module()
+        result = m.perform_fit(999, MagicMock())
+        self.assertIn("error", result)
+
+    def test_perform_fit_fires_on_fit_completed(self):
+        """on_fit_completed must be called even when the ROOT fit mock succeeds."""
+        on_done = MagicMock()
+        m = self._make_module(on_fit_completed=on_done)
+
+        hist = MagicMock()
+        hist.GetName.return_value = "h"
+        clone = MagicMock()
+        hist.Clone.return_value = clone
+        clone.GetXaxis.return_value = None  # forces default range
+        clone.GetListOfFunctions.return_value = None
+        m.set_histogram(hist)
+
+        fit_id = m.add_fit(energy=100.0, width=10.0)
+
+        # Build a mock ROOT that makes FitFeature.perform_fit succeed.
+        root = MagicMock()
+        tf1_mock = MagicMock()
+        tf1_mock.GetNpar.return_value = 3
+        tf1_mock.GetParameter.return_value = 1.0
+        tf1_mock.GetParError.return_value = 0.01
+        tf1_mock.GetChisquare.return_value = 1.5
+        tf1_mock.GetNDF.return_value = 2
+        root.TF1.return_value = tf1_mock
+        root.gROOT.IsBatch.return_value = False
+        clone.Fit.return_value = MagicMock()
+
+        m.perform_fit(fit_id, root)
+        on_done.assert_called_once()
+        called_fit_id, called_cached = on_done.call_args[0]
+        self.assertEqual(called_fit_id, fit_id)
+
+
+def FitModule_estimate(energy: float) -> float:
+    """Helper to call FitModule.estimate_peak_width without creating an instance."""
+    from modules.fit_module import FitModule
+    return FitModule.estimate_peak_width(energy)
 
 
 if __name__ == "__main__":
