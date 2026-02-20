@@ -378,7 +378,7 @@ class HistogramPreviewRenderer:
         try:
             # create a compact controls area inside the existing controls_frame
             axis_controls = ttk.Frame(middle_bar)
-            axis_controls.pack(fill=tk.X, padx=2, pady=(0, 0))
+            axis_controls.pack(anchor="w", padx=2, pady=(0, 0))
 
             # Determine defaults from histogram object when available
             xaxis = obj.GetXaxis() if hasattr(obj, "GetXaxis") else None
@@ -407,11 +407,11 @@ class HistogramPreviewRenderer:
             if y_min_default <= 0:
                 y_min_default = 0.1
 
-            # Variables for sliders (edge vars kept for compatibility)
-            self._xmin_var = tk.DoubleVar(value=x_min_default)
-            self._xmax_var = tk.DoubleVar(value=x_max_default)
-            self._ymin_var = tk.DoubleVar(value=y_min_default)
-            self._ymax_var = tk.DoubleVar(value=y_max_default)
+            # Variables for axis ranges (StringVar ensures fixed 1-decimal display)
+            self._xmin_var = tk.StringVar(value=f"{x_min_default:.1f}")
+            self._xmax_var = tk.StringVar(value=f"{x_max_default:.1f}")
+            self._ymin_var = tk.StringVar(value=f"{y_min_default:.1f}")
+            self._ymax_var = tk.StringVar(value=f"{y_max_default:.1f}")
 
             # Log scale toggles (log y enabled by default)
             self._logx_var = tk.BooleanVar(value=False)
@@ -452,18 +452,17 @@ class HistogramPreviewRenderer:
 
             # X range controls: center and width with text boxes
             # Axis controls grid: X row, X label row, Y row, Y label row
-            axis_controls.columnconfigure(1, weight=1)
-            axis_controls.columnconfigure(3, weight=1)
+            # No column weight — entries stay at their natural width
 
             # --- X axis range row ---
             ttk.Label(axis_controls, text="X:").grid(
                 row=0, column=0, sticky="e", padx=(2, 2), pady=(2, 1))
             x_min_text = ttk.Entry(axis_controls, textvariable=self._xmin_var, width=8)
-            x_min_text.grid(row=0, column=1, sticky="ew", padx=(0, 2), pady=(2, 1))
+            x_min_text.grid(row=0, column=1, padx=(0, 2), pady=(2, 1))
             ttk.Label(axis_controls, text="to").grid(
                 row=0, column=2, padx=2, pady=(2, 1))
             x_max_text = ttk.Entry(axis_controls, textvariable=self._xmax_var, width=8)
-            x_max_text.grid(row=0, column=3, sticky="ew", padx=(0, 4), pady=(2, 1))
+            x_max_text.grid(row=0, column=3, padx=(0, 4), pady=(2, 1))
             logx_checkbox = ttk.Checkbutton(
                 axis_controls, text="Log X", variable=self._logx_var,
                 command=lambda: self._schedule_render())
@@ -508,8 +507,8 @@ class HistogramPreviewRenderer:
             # --- X label row ---
             ttk.Label(axis_controls, text="X label:").grid(
                 row=1, column=0, sticky="e", padx=(2, 2), pady=(1, 2))
-            x_label_text = ttk.Entry(axis_controls, textvariable=self._xlabel_var)
-            x_label_text.grid(row=1, column=1, columnspan=3, sticky="ew", padx=(0, 4), pady=(1, 2))
+            x_label_text = ttk.Entry(axis_controls, textvariable=self._xlabel_var, width=30)
+            x_label_text.grid(row=1, column=1, columnspan=3, padx=(0, 4), pady=(1, 2))
 
             def _on_xlabel_change(*_):
                 self._schedule_render()
@@ -519,11 +518,11 @@ class HistogramPreviewRenderer:
             ttk.Label(axis_controls, text="Y:").grid(
                 row=2, column=0, sticky="e", padx=(2, 2), pady=(2, 1))
             y_min_text = ttk.Entry(axis_controls, textvariable=self._ymin_var, width=8)
-            y_min_text.grid(row=2, column=1, sticky="ew", padx=(0, 2), pady=(2, 1))
+            y_min_text.grid(row=2, column=1, padx=(0, 2), pady=(2, 1))
             ttk.Label(axis_controls, text="to").grid(
                 row=2, column=2, padx=2, pady=(2, 1))
             y_max_text = ttk.Entry(axis_controls, textvariable=self._ymax_var, width=8)
-            y_max_text.grid(row=2, column=3, sticky="ew", padx=(0, 4), pady=(2, 1))
+            y_max_text.grid(row=2, column=3, padx=(0, 4), pady=(2, 1))
             logy_checkbox = ttk.Checkbutton(
                 axis_controls, text="Log Y", variable=self._logy_var,
                 command=lambda: self._schedule_render())
@@ -568,8 +567,8 @@ class HistogramPreviewRenderer:
             # --- Y label row ---
             ttk.Label(axis_controls, text="Y label:").grid(
                 row=3, column=0, sticky="e", padx=(2, 2), pady=(1, 2))
-            y_label_text = ttk.Entry(axis_controls, textvariable=self._ylabel_var)
-            y_label_text.grid(row=3, column=1, columnspan=3, sticky="ew", padx=(0, 4), pady=(1, 2))
+            y_label_text = ttk.Entry(axis_controls, textvariable=self._ylabel_var, width=30)
+            y_label_text.grid(row=3, column=1, columnspan=3, padx=(0, 4), pady=(1, 2))
 
             def _on_ylabel_change(*_):
                 self._schedule_render()
@@ -640,11 +639,11 @@ class HistogramPreviewRenderer:
             if hasattr(self, "_xlabel_var"):
                 xlabel = self._xlabel_var.get()
                 if xlabel:
-                    options["xlabel"] = xlabel
+                    options["xtitle"] = xlabel
             if hasattr(self, "_ylabel_var"):
                 ylabel = self._ylabel_var.get()
                 if ylabel:
-                    options["ylabel"] = ylabel
+                    options["ytitle"] = ylabel
         except Exception:
             pass
 

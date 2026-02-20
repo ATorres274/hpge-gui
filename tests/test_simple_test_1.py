@@ -463,8 +463,8 @@ class TestHistogramControls(unittest.TestCase):
         obj = _make_mock_histogram("h1", x_min=100.0, x_max=3000.0)
         renderer = self._build_renderer(obj)
 
-        self.assertAlmostEqual(renderer._xmin_var.get(), 100.0, places=1)
-        self.assertAlmostEqual(renderer._xmax_var.get(), 3000.0, places=1)
+        self.assertAlmostEqual(float(renderer._xmin_var.get()), 100.0, places=1)
+        self.assertAlmostEqual(float(renderer._xmax_var.get()), 3000.0, places=1)
 
     def test_initial_log_y_is_enabled(self):
         """Log Y scale is enabled by default."""
@@ -506,8 +506,8 @@ class TestHistogramControls(unittest.TestCase):
         renderer._xmin_var.set(200.0)
         renderer._xmax_var.set(800.0)
 
-        self.assertAlmostEqual(renderer._xmin_var.get(), 200.0, places=1)
-        self.assertAlmostEqual(renderer._xmax_var.get(), 800.0, places=1)
+        self.assertAlmostEqual(float(renderer._xmin_var.get()), 200.0, places=1)
+        self.assertAlmostEqual(float(renderer._xmax_var.get()), 800.0, places=1)
 
     def test_set_y_range(self):
         """Setting ymin / ymax variables stores the provided values."""
@@ -517,8 +517,8 @@ class TestHistogramControls(unittest.TestCase):
         renderer._ymin_var.set(5.0)
         renderer._ymax_var.set(500.0)
 
-        self.assertAlmostEqual(renderer._ymin_var.get(), 5.0, places=1)
-        self.assertAlmostEqual(renderer._ymax_var.get(), 500.0, places=1)
+        self.assertAlmostEqual(float(renderer._ymin_var.get()), 5.0, places=1)
+        self.assertAlmostEqual(float(renderer._ymax_var.get()), 500.0, places=1)
 
     def test_controls_for_multiple_histograms_are_independent(self):
         """Each histogram renderer has its own independent set of control variables."""
@@ -534,8 +534,8 @@ class TestHistogramControls(unittest.TestCase):
         # Modify renderer1's x range; renderer2 should be unaffected.
         renderer1._xmax_var.set(300.0)
 
-        self.assertAlmostEqual(renderer1._xmax_var.get(), 300.0, places=1)
-        self.assertAlmostEqual(renderer2._xmax_var.get(), 2000.0, places=1)
+        self.assertAlmostEqual(float(renderer1._xmax_var.get()), 300.0, places=1)
+        self.assertAlmostEqual(float(renderer2._xmax_var.get()), 2000.0, places=1)
 
 
 # ---------------------------------------------------------------------------
@@ -664,8 +664,8 @@ class TestFullWorkflow(unittest.TestCase):
         # Zoom in on X axis
         real_renderer._xmin_var.set(100.0)
         real_renderer._xmax_var.set(1500.0)
-        self.assertAlmostEqual(real_renderer._xmin_var.get(), 100.0, places=1)
-        self.assertAlmostEqual(real_renderer._xmax_var.get(), 1500.0, places=1)
+        self.assertAlmostEqual(float(real_renderer._xmin_var.get()), 100.0, places=1)
+        self.assertAlmostEqual(float(real_renderer._xmax_var.get()), 1500.0, places=1)
 
         # Toggle log scales
         real_renderer._logx_var.set(True)
