@@ -280,12 +280,11 @@ class HistogramTab:
                 else:
                     self.hide_all_histograms()
 
-            # Notify app of remaining count and updated list via callback
+            # Notify app of remaining count via callback
             remaining = len(self._hist_tabs)
-            remaining_list = [(k, n) for k, n, _ in self._open_histograms]
             if self._on_histogram_closed and callable(self._on_histogram_closed):
                 try:
-                    self._on_histogram_closed(remaining, remaining_list)
+                    self._on_histogram_closed(remaining)
                 except Exception:
                     pass
         except Exception:
@@ -452,34 +451,30 @@ class HistogramPreviewRenderer:
                     pass
 
             # X range controls: center and width with text boxes
-            xframe = ttk.Frame(axis_controls)
-            xframe.pack(fill=tk.X, padx=0, pady=(1, 0))
-            
-            # X Label control
-            x_label_label = ttk.Label(xframe, text="X label:", width=10)
-            x_label_label.pack(side=tk.LEFT, padx=(2, 1))
-            x_label_text = ttk.Entry(xframe, textvariable=self._xlabel_var, width=12)
-            x_label_text.pack(side=tk.LEFT, padx=(0, 6))
-            
-            # Trigger render on X label change
-            def _on_xlabel_change(*_):
-                self._schedule_render()
-            self._xlabel_var.trace_add("write", _on_xlabel_change)
-            
-            # X Min control
-            x_min_label = ttk.Label(xframe, text="X min:", width=10)
-            x_min_label.pack(side=tk.LEFT, padx=(0, 1))
-            x_min_text = ttk.Entry(xframe, textvariable=self._xmin_var, width=8)
-            x_min_text.pack(side=tk.LEFT, padx=(0, 4))
-            
-            # Format X min on focus out and validate
+            # Axis controls grid: X row, X label row, Y row, Y label row
+            axis_controls.columnconfigure(1, weight=1)
+            axis_controls.columnconfigure(3, weight=1)
+
+            # --- X axis range row ---
+            ttk.Label(axis_controls, text="X:").grid(
+                row=0, column=0, sticky="e", padx=(2, 2), pady=(2, 1))
+            x_min_text = ttk.Entry(axis_controls, textvariable=self._xmin_var, width=8)
+            x_min_text.grid(row=0, column=1, sticky="ew", padx=(0, 2), pady=(2, 1))
+            ttk.Label(axis_controls, text="to").grid(
+                row=0, column=2, padx=2, pady=(2, 1))
+            x_max_text = ttk.Entry(axis_controls, textvariable=self._xmax_var, width=8)
+            x_max_text.grid(row=0, column=3, sticky="ew", padx=(0, 4), pady=(2, 1))
+            logx_checkbox = ttk.Checkbutton(
+                axis_controls, text="Log X", variable=self._logx_var,
+                command=lambda: self._schedule_render())
+            logx_checkbox.grid(row=0, column=4, padx=(0, 2), pady=(2, 1))
+
+            # X range validation on focus-out
             def _format_xmin(event=None):
                 try:
                     val = float(self._xmin_var.get())
-                    # Ensure min is never 0 or negative
                     if val <= 0:
                         val = 0.1
-                    # Ensure min doesn't cross max
                     xmax = float(self._xmax_var.get())
                     if val >= xmax:
                         val = xmax - 1.0
@@ -487,22 +482,10 @@ class HistogramPreviewRenderer:
                 except (ValueError, tk.TclError):
                     pass
                 self._schedule_render()
-            x_min_text.bind("<FocusOut>", _format_xmin)
-            x_min_text.bind("<MouseWheel>", lambda e: self._on_min_scroll(e, self._xmin_var, self._xmax_var, x_min_default, x_max_default * 2.5))
-            x_min_text.bind("<Button-4>", lambda e: self._on_min_scroll(e, self._xmin_var, self._xmax_var, x_min_default, x_max_default * 2.5))
-            x_min_text.bind("<Button-5>", lambda e: self._on_min_scroll(e, self._xmin_var, self._xmax_var, x_min_default, x_max_default * 2.5))
-            
-            # X Max control
-            x_max_label = ttk.Label(xframe, text="X max:", width=8)
-            x_max_label.pack(side=tk.LEFT, padx=(0, 1))
-            x_max_text = ttk.Entry(xframe, textvariable=self._xmax_var, width=8)
-            x_max_text.pack(side=tk.LEFT, padx=(0, 4))
-            
-            # Format X max on focus out and validate
+
             def _format_xmax(event=None):
                 try:
                     val = float(self._xmax_var.get())
-                    # Ensure max doesn't cross min
                     xmin = float(self._xmin_var.get())
                     if val <= xmin:
                         val = xmin + 1.0
@@ -510,44 +493,48 @@ class HistogramPreviewRenderer:
                 except (ValueError, tk.TclError):
                     pass
                 self._schedule_render()
+
+            x_min_text.bind("<FocusOut>", _format_xmin)
+            x_min_text.bind("<Return>", _format_xmin)
+            x_min_text.bind("<MouseWheel>", lambda e: self._on_min_scroll(e, self._xmin_var, self._xmax_var, x_min_default, x_max_default * 2.5))
+            x_min_text.bind("<Button-4>", lambda e: self._on_min_scroll(e, self._xmin_var, self._xmax_var, x_min_default, x_max_default * 2.5))
+            x_min_text.bind("<Button-5>", lambda e: self._on_min_scroll(e, self._xmin_var, self._xmax_var, x_min_default, x_max_default * 2.5))
             x_max_text.bind("<FocusOut>", _format_xmax)
+            x_max_text.bind("<Return>", _format_xmax)
             x_max_text.bind("<MouseWheel>", lambda e: self._on_max_scroll(e, self._xmax_var, self._xmin_var, x_min_default, x_max_default * 2.5))
             x_max_text.bind("<Button-4>", lambda e: self._on_max_scroll(e, self._xmax_var, self._xmin_var, x_min_default, x_max_default * 2.5))
             x_max_text.bind("<Button-5>", lambda e: self._on_max_scroll(e, self._xmax_var, self._xmin_var, x_min_default, x_max_default * 2.5))
-            
-            # Log X checkbox (aligned to the left near the entry boxes)
-            logx_checkbox = ttk.Checkbutton(xframe, text="Log X", variable=self._logx_var, command=lambda: self._schedule_render())
-            logx_checkbox.pack(side=tk.LEFT, padx=(4, 2))
 
-            # Y range controls: center and width with text boxes
-            yframe = ttk.Frame(axis_controls)
-            yframe.pack(fill=tk.X, padx=0, pady=(1, 0))
-            
-            # Y Label control
-            y_label_label = ttk.Label(yframe, text="Y label:", width=10)
-            y_label_label.pack(side=tk.LEFT, padx=(2, 1))
-            y_label_text = ttk.Entry(yframe, textvariable=self._ylabel_var, width=12)
-            y_label_text.pack(side=tk.LEFT, padx=(0, 6))
-            
-            # Trigger render on Y label change
-            def _on_ylabel_change(*_):
+            # --- X label row ---
+            ttk.Label(axis_controls, text="X label:").grid(
+                row=1, column=0, sticky="e", padx=(2, 2), pady=(1, 2))
+            x_label_text = ttk.Entry(axis_controls, textvariable=self._xlabel_var)
+            x_label_text.grid(row=1, column=1, columnspan=3, sticky="ew", padx=(0, 4), pady=(1, 2))
+
+            def _on_xlabel_change(*_):
                 self._schedule_render()
-            self._ylabel_var.trace_add("write", _on_ylabel_change)
-            
-            # Y Min control
-            y_min_label = ttk.Label(yframe, text="Y min:", width=10)
-            y_min_label.pack(side=tk.LEFT, padx=(0, 1))
-            y_min_text = ttk.Entry(yframe, textvariable=self._ymin_var, width=8)
-            y_min_text.pack(side=tk.LEFT, padx=(0, 4))
-            
-            # Format Y min on focus out and validate
+            self._xlabel_var.trace_add("write", _on_xlabel_change)
+
+            # --- Y axis range row ---
+            ttk.Label(axis_controls, text="Y:").grid(
+                row=2, column=0, sticky="e", padx=(2, 2), pady=(2, 1))
+            y_min_text = ttk.Entry(axis_controls, textvariable=self._ymin_var, width=8)
+            y_min_text.grid(row=2, column=1, sticky="ew", padx=(0, 2), pady=(2, 1))
+            ttk.Label(axis_controls, text="to").grid(
+                row=2, column=2, padx=2, pady=(2, 1))
+            y_max_text = ttk.Entry(axis_controls, textvariable=self._ymax_var, width=8)
+            y_max_text.grid(row=2, column=3, sticky="ew", padx=(0, 4), pady=(2, 1))
+            logy_checkbox = ttk.Checkbutton(
+                axis_controls, text="Log Y", variable=self._logy_var,
+                command=lambda: self._schedule_render())
+            logy_checkbox.grid(row=2, column=4, padx=(0, 2), pady=(2, 1))
+
+            # Y range validation on focus-out
             def _format_ymin(event=None):
                 try:
                     val = float(self._ymin_var.get())
-                    # Ensure min is never 0 or negative
                     if val <= 0:
                         val = 0.1
-                    # Ensure min doesn't cross max
                     ymax = float(self._ymax_var.get())
                     if val >= ymax:
                         val = ymax - 1.0
@@ -555,22 +542,10 @@ class HistogramPreviewRenderer:
                 except (ValueError, tk.TclError):
                     pass
                 self._schedule_render()
-            y_min_text.bind("<FocusOut>", _format_ymin)
-            y_min_text.bind("<MouseWheel>", lambda e: self._on_min_scroll(e, self._ymin_var, self._ymax_var, y_min_default, y_max_default * 2.5))
-            y_min_text.bind("<Button-4>", lambda e: self._on_min_scroll(e, self._ymin_var, self._ymax_var, y_min_default, y_max_default * 2.5))
-            y_min_text.bind("<Button-5>", lambda e: self._on_min_scroll(e, self._ymin_var, self._ymax_var, y_min_default, y_max_default * 2.5))
-            
-            # Y Max control
-            y_max_label = ttk.Label(yframe, text="Y max:", width=8)
-            y_max_label.pack(side=tk.LEFT, padx=(0, 1))
-            y_max_text = ttk.Entry(yframe, textvariable=self._ymax_var, width=8)
-            y_max_text.pack(side=tk.LEFT, padx=(0, 2))
-            
-            # Format Y max on focus out and validate
+
             def _format_ymax(event=None):
                 try:
                     val = float(self._ymax_var.get())
-                    # Ensure max doesn't cross min
                     ymin = float(self._ymin_var.get())
                     if val <= ymin:
                         val = ymin + 1.0
@@ -578,54 +553,27 @@ class HistogramPreviewRenderer:
                 except (ValueError, tk.TclError):
                     pass
                 self._schedule_render()
+
+            y_min_text.bind("<FocusOut>", _format_ymin)
+            y_min_text.bind("<Return>", _format_ymin)
+            y_min_text.bind("<MouseWheel>", lambda e: self._on_min_scroll(e, self._ymin_var, self._ymax_var, y_min_default, y_max_default * 2.5))
+            y_min_text.bind("<Button-4>", lambda e: self._on_min_scroll(e, self._ymin_var, self._ymax_var, y_min_default, y_max_default * 2.5))
+            y_min_text.bind("<Button-5>", lambda e: self._on_min_scroll(e, self._ymin_var, self._ymax_var, y_min_default, y_max_default * 2.5))
             y_max_text.bind("<FocusOut>", _format_ymax)
+            y_max_text.bind("<Return>", _format_ymax)
             y_max_text.bind("<MouseWheel>", lambda e: self._on_max_scroll(e, self._ymax_var, self._ymin_var, y_min_default, y_max_default * 2.5))
             y_max_text.bind("<Button-4>", lambda e: self._on_max_scroll(e, self._ymax_var, self._ymin_var, y_min_default, y_max_default * 2.5))
             y_max_text.bind("<Button-5>", lambda e: self._on_max_scroll(e, self._ymax_var, self._ymin_var, y_min_default, y_max_default * 2.5))
 
-            # Log Y checkbox (aligned to the left near the entry boxes)
-            logy_checkbox = ttk.Checkbutton(yframe, text="Log Y", variable=self._logy_var, command=lambda: self._schedule_render())
-            logy_checkbox.pack(side=tk.LEFT, padx=(4, 2))
+            # --- Y label row ---
+            ttk.Label(axis_controls, text="Y label:").grid(
+                row=3, column=0, sticky="e", padx=(2, 2), pady=(1, 2))
+            y_label_text = ttk.Entry(axis_controls, textvariable=self._ylabel_var)
+            y_label_text.grid(row=3, column=1, columnspan=3, sticky="ew", padx=(0, 4), pady=(1, 2))
 
-            # Update edge vars and schedule render on min/max changes
-            def _on_min_max_change(*_):
-                try:
-                    xmin = float(self._xmin_var.get())
-                    xmax = float(self._xmax_var.get())
-                    ymin = float(self._ymin_var.get())
-                    ymax = float(self._ymax_var.get())
-                    
-                    # Validate ranges
-                    if xmin <= 0:
-                        xmin = 0.1
-                    if xmin >= xmax:
-                        xmin = xmax - 1.0
-                    if xmin <= 0:
-                        xmin = 0.1
-                    
-                    if ymin <= 0:
-                        ymin = 0.1
-                    if ymin >= ymax:
-                        ymin = ymax - 1.0
-                    if ymin <= 0:
-                        ymin = 0.1
-                    
-                    self._xmin_var.set(xmin)
-                    self._xmax_var.set(xmax)
-                    self._ymin_var.set(ymin)
-                    self._ymax_var.set(ymax)
-                except Exception:
-                    pass
-                _schedule_render()
-
-            # Trace changes to min/max vars
-            try:
-                self._xmin_var.trace_add("write", _on_min_max_change)
-                self._xmax_var.trace_add("write", _on_min_max_change)
-                self._ymin_var.trace_add("write", _on_min_max_change)
-                self._ymax_var.trace_add("write", _on_min_max_change)
-            except Exception:
-                pass
+            def _on_ylabel_change(*_):
+                self._schedule_render()
+            self._ylabel_var.trace_add("write", _on_ylabel_change)
         except Exception:
             pass
 
