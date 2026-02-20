@@ -228,13 +228,21 @@ class HistogramControlsModule:
 
         All tkinter-Var extraction happens in the tab layer; this method
         receives already-converted Python primitives.
+
+        When ``w`` and ``h`` are both 0 the ``target_width``, ``target_height``
+        and ``priority`` keys are **omitted** from the result so that
+        ``HistogramRenderer.render_into_label`` falls back to reading the
+        actual label geometry — this ensures the rendered image fills the
+        preview label with no blank white-space border.
         """
-        options: dict = {
-            "target_width": int(w),
-            "target_height": int(h),
-            "priority": "height",
-            "show_markers": show_markers,
-        }
+        options: dict = {"show_markers": show_markers}
+
+        # Only include explicit target dimensions when the caller provides them.
+        # Callers that want "fit the label" should pass w=0, h=0.
+        if w > 0 and h > 0:
+            options["target_width"] = int(w)
+            options["target_height"] = int(h)
+            options["priority"] = "height"
 
         try:
             if xmin_raw and xmax_raw:

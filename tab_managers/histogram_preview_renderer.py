@@ -53,18 +53,14 @@ class HistogramPreviewRenderer:
         self._hist_path = path
 
         main_frame = ttk.Frame(parent_container)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+        main_frame.pack(fill=tk.BOTH, expand=True)
 
         content_frame = ttk.Frame(main_frame)
-        content_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=(2, 4))
+        content_frame.pack(fill=tk.BOTH, expand=True)
 
-        content_frame.columnconfigure(0, weight=1)
-        content_frame.rowconfigure(0, weight=1)  # controls area (top)
-        content_frame.rowconfigure(1, weight=1)  # histogram preview area (bottom)
-
-        # Controls area (top half)
+        # Controls area — compact, never expands vertically
         controls_frame = ttk.Frame(content_frame)
-        controls_frame.grid(row=0, column=0, sticky="nsew")
+        controls_frame.pack(fill=tk.X, side=tk.TOP)
 
         top_sep = ttk.Separator(controls_frame, orient="horizontal")
         top_sep.pack(fill=tk.X, padx=4, pady=(2, 2))
@@ -72,11 +68,11 @@ class HistogramPreviewRenderer:
         middle_bar = ttk.Frame(controls_frame)
         middle_bar.pack(fill=tk.X, padx=4, pady=(0, 0))
 
-        # Preview label (bottom half)
+        # Preview label — fills all remaining vertical space
         preview_frame = ttk.Frame(content_frame)
-        preview_frame.grid(row=1, column=0, sticky="nsew", pady=(2, 2))
+        preview_frame.pack(fill=tk.BOTH, expand=True)
         preview_label = tk.Label(preview_frame, bg="white")
-        preview_label.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+        preview_label.pack(fill=tk.BOTH, expand=True)
 
         self._preview_label = preview_label
         self._current_obj = obj
@@ -721,8 +717,9 @@ class HistogramPreviewRenderer:
     def render_preview(self, obj) -> None:
         """Render a preview of the histogram onto the bottom preview label.
 
-        Delegates size computation to ``HistogramControlsModule`` and all
-        rendering work to the shared ``HistogramRenderer``.
+        Uses the actual label geometry so the rendered image fills the label
+        exactly, with no blank white space.  Delegates all rendering work to
+        the shared ``HistogramRenderer``.
         """
         label = getattr(self, "_preview_label", None)
         pm = getattr(self, "_preview_manager", None)
@@ -737,17 +734,11 @@ class HistogramPreviewRenderer:
         except Exception:
             root = None
 
-        try:
-            toplevel = label.winfo_toplevel()
-            win_w = toplevel.winfo_width() or 800
-            win_h = toplevel.winfo_height() or 600
-        except Exception:
-            win_w, win_h = 800, 600
-
-        w, h = HistogramControlsModule.compute_preview_size(win_w, win_h)
-
+        # Build render options WITHOUT target dimensions so render_into_label
+        # reads the actual label size (winfo_width / winfo_height) and fills
+        # the label exactly — no blank white-space padding.
         options = HistogramControlsModule.build_render_options(
-            w, h,
+            0, 0,
             xmin_raw=getattr(self, "_xmin_var", None) and self._xmin_var.get() or "",
             xmax_raw=getattr(self, "_xmax_var", None) and self._xmax_var.get() or "",
             ymin_raw=getattr(self, "_ymin_var", None) and self._ymin_var.get() or "",
