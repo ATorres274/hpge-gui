@@ -238,6 +238,13 @@ class HistogramTab:
         try:
             # Remove from tracking
             container, renderer, obj = self._hist_tabs[tab_key]
+            # Unpack the container explicitly before removing from tracking so that
+            # hide_all_histograms (called below when closing the current histogram)
+            # does not leave this container packed after it is no longer tracked.
+            try:
+                container.pack_forget()
+            except Exception:
+                pass
             del self._hist_tabs[tab_key]
             
             # Remove from dropdown list
