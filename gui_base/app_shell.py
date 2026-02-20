@@ -436,22 +436,36 @@ class RootBrowserApp(tk.Tk):
                 exception=e
             )
 
-    def _on_histogram_closed(self, remaining_count: int) -> None:
+    def _on_histogram_closed(self, remaining_count: int, histogram_list: list = None) -> None:
         """Callback from histogram tab when a histogram is closed.
 
-        If the histogram container is no longer visible (i.e. the currently
-        displayed histogram was the one that was just closed), return the user
-        to the browser.  If another histogram is still being displayed (a
-        background histogram was removed via the dropdown while a different one
-        was visible) we leave the view unchanged.
+        Updates the dropdown with remaining histograms.  If another histogram
+        is still being displayed it updates the combobox selection to match it.
+        If no histograms remain, returns the user to the browser.
         """
         try:
+            # Update the dropdown values to reflect remaining histograms
+            if histogram_list is not None:
+                self.update_histogram_dropdown(histogram_list)
+
             if not self._hist_container.winfo_ismapped():
-                # The visible histogram was closed (hide_all_histograms already
-                # unpacked _hist_container).  Always return to browser so the
-                # user explicitly chooses what to view next.
+                # No histogram is visible – go to browser (clears combo selection)
                 self._focus_browser()
-            # else: a different histogram is still on screen – do nothing.
+            else:
+                # A histogram is still on screen; sync the combo selection to it
+                current_key = (
+                    self.histogram_tab.current_histogram_key
+                    if hasattr(self, 'histogram_tab')
+                    else None
+                )
+                if current_key and histogram_list:
+                    for idx, (k, _) in enumerate(histogram_list):
+                        if k == current_key:
+                            try:
+                                self._histogram_combo.current(idx)
+                            except Exception:
+                                pass
+                            break
         except Exception as e:
             self._error_dispatcher.emit(
                 ErrorLevel.WARNING,
