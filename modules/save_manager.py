@@ -434,6 +434,45 @@ class SaveManager:
         except Exception:
             raise
 
+    def export_peaks_json(self, peaks: list[dict], histogram_name: str = "histogram", filepath: str | None = None) -> str | None:
+        """Export peak list to a JSON file.
+
+        Args:
+            peaks: List of peak dicts with ``energy``, ``counts``, ``source`` keys.
+            histogram_name: Used as the top-level key in the output JSON.
+            filepath: Destination file path (required).
+
+        Returns:
+            The filepath on success, ``None`` if peaks is empty.
+        """
+        if not peaks:
+            return None
+        if not filepath:
+            raise ValueError("filepath is required")
+        try:
+            dir_path = os.path.dirname(filepath)
+            if dir_path:
+                os.makedirs(dir_path, exist_ok=True)
+            import json
+
+            export: dict = {
+                "histogram": histogram_name,
+                "peaks": [
+                    {
+                        "peak_number": i,
+                        "energy_keV": round(float(p["energy"]), 4),
+                        "counts": round(float(p["counts"]), 2) if p.get("counts") is not None else None,
+                        "source": p.get("source", ""),
+                    }
+                    for i, p in enumerate(peaks, 1)
+                ],
+            }
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(export, f, indent=2)
+            return filepath
+        except Exception:
+            raise
+
     def create_batch_report(self, batch_results: list[dict[str, Any]], output_dir: str | None = None) -> str | None:
         if not batch_results:
             return None

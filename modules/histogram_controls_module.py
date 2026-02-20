@@ -228,13 +228,21 @@ class HistogramControlsModule:
 
         All tkinter-Var extraction happens in the tab layer; this method
         receives already-converted Python primitives.
+
+        When ``w`` and ``h`` are both 0 the ``target_width``, ``target_height``
+        and ``priority`` keys are **omitted** from the result so that
+        ``HistogramRenderer.render_into_label`` falls back to reading the
+        actual label geometry — this ensures the rendered image fills the
+        preview label with no blank white-space border.
         """
-        options: dict = {
-            "target_width": int(w),
-            "target_height": int(h),
-            "priority": "height",
-            "show_markers": show_markers,
-        }
+        options: dict = {"show_markers": show_markers}
+
+        # Only include explicit target dimensions when the caller provides them.
+        # Callers that want "fit the label" should pass w=0, h=0.
+        if w > 0 and h > 0:
+            options["target_width"] = int(w)
+            options["target_height"] = int(h)
+            options["priority"] = "height"
 
         try:
             if xmin_raw and xmax_raw:
@@ -277,6 +285,16 @@ class HistogramControlsModule:
         w = int(max(160, win_w * 0.8))
         h = int(max(120, win_h * 0.5))
         return w, h
+
+    @staticmethod
+    def detect_scroll_direction(event) -> bool:
+        """Return ``True`` if the scroll event represents a downward scroll.
+
+        Handles both Windows/macOS (``event.delta``) and Linux
+        (``event.num``) scroll events.  ``True`` means *decrease* (scroll
+        down / ``Button-5`` / negative delta); ``False`` means *increase*.
+        """
+        return event.num == 5 or (hasattr(event, "delta") and event.delta < 0)
 
 
 __all__ = ["HistogramControlsModule"]

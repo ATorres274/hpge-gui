@@ -7,13 +7,18 @@ The project follows a strict **Tab → Module → Feature** architecture:
 - **Features** (`features/`) — pure computation and action handlers; no UI or persistent state.
 
 ### Key Tab: HistogramTab (`tab_managers/histogram_tab.py`)
-Manages multiple open histogram previews. Delegates all rendering and controls to
-`HistogramPreviewRenderer` (inner class in the same file). Exposes three callbacks to the app:
+Manages multiple open histogram previews. Delegates per-histogram UI creation to
+`HistogramPreviewRenderer` (in `tab_managers/histogram_preview_renderer.py`).
+Exposes three callbacks to the app:
 - `on_histogram_selected(key: str)` — user selected a histogram
 - `on_histogram_closed(remaining_count: int)` — histogram closed
 - `on_histogram_opened(list[(key, name)])` — histogram opened
 
-### HistogramPreviewRenderer
+`HistogramPreviewRenderer` is re-exported from `histogram_tab.py` so existing
+imports of the form ``from tab_managers.histogram_tab import HistogramPreviewRenderer``
+continue to work.
+
+### HistogramPreviewRenderer (`tab_managers/histogram_preview_renderer.py`)
 Builds the per-histogram UI panel:
 - **Control grid** (top, compact, 6 rows):
   - Row 0: Title entry
@@ -25,7 +30,11 @@ Builds the per-histogram UI panel:
 - **Peak finder panel** (right): Peaks treeview, manual entry, Find/Clear buttons
 - **Preview label** (bottom): receives Tk PhotoImage from `HistogramRenderer`
 
-Peak panel construction is extracted into `_build_peak_panel(middle_bar, app, obj)`.
+Range row creation is extracted into `_build_range_row()` and event binding
+into `_bind_range_entry()` so `_build_axis_controls` is focused and readable.
+Peak panel construction is in `_build_peak_panel(middle_bar, app, obj)`.
+Scroll event direction detection is delegated to
+`HistogramControlsModule.detect_scroll_direction(event)`.
 
 ### HistogramControlsModule (`modules/histogram_controls_module.py`)
 Stateless calculation module (no tkinter). Called by `HistogramPreviewRenderer`:
@@ -35,6 +44,8 @@ Stateless calculation module (no tkinter). Called by `HistogramPreviewRenderer`:
 - `validate_min/validate_max(raw, other_raw, hard_limit=None)` — focus-out validation;
   silently snaps to hard limit (histogram max) if exceeded
 - `build_render_options(w, h, ...)` — assembles options dict for HistogramRenderer
+- `detect_scroll_direction(event) -> bool` — returns True for downward scroll;
+  handles both Windows/macOS (event.delta) and Linux (event.num) events
 
 ### Browser Tab
 - Uses a `ModuleRegistry` to manage modules (e.g., file_manager).
@@ -42,7 +53,8 @@ Stateless calculation module (no tkinter). Called by `HistogramPreviewRenderer`:
 
 ### Peak Finder
 - Domain logic in `features/peak_search_feature.py` (automatic + manual helpers).
-- UI adapter: `modules/peak_manager.py` (`PeakFinderModule`).
+- UI adapter: `modules/peak_manager.py` (`PeakFinderModule`) — no tkinter imports;
+  accepts widget references typed as `Any` and detects Treeview via duck-typing.
 - `HistogramPreviewRenderer` owns peak panel UI; `PeakFinderModule` owns peak data.
 
 ### Codebase Organization
@@ -50,7 +62,11 @@ Stateless calculation module (no tkinter). Called by `HistogramPreviewRenderer`:
 - `modules/root_file_manager.py`: Unified file dialog, opening, and browsing logic.
 - `modules/histogram_controls_module.py`: Pure axis-control calculations for histogram tab.
 - `tab_managers/browser_tab.py`: Delegates file operations to module registry.
-- `tab_managers/histogram_tab.py`: `HistogramTab` + `HistogramPreviewRenderer`.
+- `tab_managers/histogram_tab.py`: `HistogramTab` — manages multiple open histograms;
+  re-exports `HistogramPreviewRenderer` for backward compatibility.
+- `tab_managers/histogram_preview_renderer.py`: `HistogramPreviewRenderer` — per-histogram
+  UI panel; delegates computation to `HistogramControlsModule` and peak data to
+  `PeakFinderModule`.
 
 ### Documentation
 All architectural updates prior to 2026-02 are in `CHANGELOG.md`.

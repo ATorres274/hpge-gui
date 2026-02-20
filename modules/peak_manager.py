@@ -7,9 +7,6 @@ manual peak helpers for use by the histogram tab.
 
 from __future__ import annotations
 
-import tkinter as tk
-from datetime import datetime
-from tkinter import ttk
 from typing import Any
 
 
@@ -30,22 +27,60 @@ class PeakFinderModule:
         self.manual = PeakSearchManual()
         self.current_hist = None
         self.peaks: list[dict] = []
-        self._peaks_tree: ttk.Treeview | None = None
-        self._peaks_text: tk.Text | None = None
-        self._manual_peak_var: tk.StringVar | None = None
+        self._peaks_tree: Any | None = None
+        self._peaks_text: Any | None = None
+        self._manual_peak_var: Any | None = None
         self._render_callback = None
         self.fitting_feature = None
         self.parent_app = None
         self.host_notebook = None
 
-    def setup(self, app, peaks_widget: Any, manual_peak_var: tk.StringVar | None) -> None:
+        # Search parameters — set by the tab layer either via ``set_search_params``
+        # or by direct attribute assignment (e.g. ``pf.search_sigma = 5``).
+        self.search_sigma: float = 3.0
+        self.search_energy_min: float | None = None
+        self.search_energy_max: float | None = None
+        self.search_threshold_counts: float = 0.0
+
+    def set_search_params(
+        self,
+        sigma: float | None = None,
+        energy_min: float | None = None,
+        energy_max: float | None = None,
+        threshold_counts: float | None = None,
+        *,
+        clear_energy_min: bool = False,
+        clear_energy_max: bool = False,
+    ) -> None:
+        """Update automatic-search parameters.
+
+        Called by the tab layer when the user adjusts the search controls.
+        Only non-``None`` arguments are updated.  Pass ``clear_energy_min=True``
+        or ``clear_energy_max=True`` to explicitly remove the corresponding bound.
+        """
+        if sigma is not None:
+            self.search_sigma = float(sigma)
+        if clear_energy_min:
+            self.search_energy_min = None
+        elif energy_min is not None:
+            self.search_energy_min = float(energy_min)
+        if clear_energy_max:
+            self.search_energy_max = None
+        elif energy_max is not None:
+            self.search_energy_max = float(energy_max)
+        if threshold_counts is not None:
+            self.search_threshold_counts = float(threshold_counts)
+
+    def setup(self, app: Any, peaks_widget: Any, manual_peak_var: Any) -> None:
         """Attach UI widgets (Treeview or fallback Text widget) and manual var.
 
         The UI remains owned by the caller; this module only stores
         references and populates the view when `self._update_peaks_display` is called.
         """
         self.parent_app = app
-        if isinstance(peaks_widget, ttk.Treeview):
+        # Accept any widget — Treeview is detected by the presence of
+        # ``get_children``; anything else is treated as a text widget.
+        if hasattr(peaks_widget, "get_children"):
             self._peaks_tree = peaks_widget
         else:
             self._peaks_text = peaks_widget
@@ -61,7 +96,14 @@ class PeakFinderModule:
         if self.current_hist is None:
             return
 
-        found = self.automatic.find_peaks(app, self.current_hist) or []
+        found = self.automatic.find_peaks(
+            app,
+            self.current_hist,
+            sigma=self.search_sigma,
+            energy_min=self.search_energy_min,
+            energy_max=self.search_energy_max,
+            threshold_counts=self.search_threshold_counts,
+        ) or []
 
         # Preserve manual peaks added by the user; replace only automatic peaks
         manual_peaks = [p for p in self.peaks if p.get("source") == "manual"]
@@ -124,10 +166,10 @@ class PeakFinderModule:
             text = "\n".join(auto_lines).strip() if auto_lines else "No peaks found"
             if self._peaks_text is not None:
                 try:
-                    self._peaks_text.config(state=tk.NORMAL)
-                    self._peaks_text.delete("1.0", tk.END)
-                    self._peaks_text.insert(tk.END, text)
-                    self._peaks_text.config(state=tk.DISABLED)
+                    self._peaks_text.config(state="normal")
+                    self._peaks_text.delete("1.0", "end")
+                    self._peaks_text.insert("end", text)
+                    self._peaks_text.config(state="disabled")
                 except Exception:
                     pass
         # Notify UI to re-render preview when peaks change
