@@ -185,6 +185,11 @@ class PeakFinderModule:
         if self._render_callback:
             self._render_callback()
 
+    def _clear_peaks(self) -> None:
+        """Remove all peaks (automatic and manual) and refresh the display."""
+        self.peaks = []
+        self._update_peaks_display()
+
     def _export_peaks(self) -> None:
         # Exporting is handled by the tab-level controller.
         # This method is intentionally a no-op; feature authors should

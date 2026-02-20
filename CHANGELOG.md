@@ -11,31 +11,29 @@
 - Moved browser file-management into `modules/root_file_manager.py`.
 - Added `features/root_directory.py` for directory population and details rendering.
 - Moved `AdvancedSaveDialog` and export UI helpers into `modules/save_manager.py`.
-- Updated packaging `pyHPGeGui.egg-info/SOURCES.txt` to include moved files.
 
-#### 2026-02-20
-- Consolidated peak finder helpers into `features/peak_search_feature.py` and added `modules/peak_manager.py` as the UI adapter (renamed from previous `peak_finder_module` layout). Updated histogram tab imports to use the new module.
+#### 2026-02-20 (ErrorDispatcher)
+- Consolidated peak finder helpers into `features/peak_search_feature.py` and added `modules/peak_manager.py` as the UI adapter.
+- Created `modules/error_dispatcher.py` — singleton error management system with ErrorLevel enum (INFO/WARNING/ERROR/CRITICAL), error history, and structured logging.
+- Refactored 63+ bare except blocks across 5 core modules to use ErrorDispatcher.
 
-**Phase 4: ErrorDispatcher Implementation (Comprehensive Error Handling)**:
-- Created `modules/error_dispatcher.py` - singleton error management system
-- Implemented ErrorLevel enum: INFO, WARNING, ERROR, CRITICAL
-- Added ErrorEvent dataclass with full context preservation and serialization
-- Integrated Python logging with stderr output and structured logging
-- Implemented error history tracking (bounded to 100 events for memory efficiency)
-- Created safe_execute wrapper for error wrapping and exception chaining
-- Refactored 63+ bare except blocks across 5 core modules:
-  - `gui_base/app_shell.py`: 15 blocks → ErrorDispatcher with ERROR/CRITICAL subscription for UI display
-  - `modules/session_manager.py`: 15 blocks → ErrorDispatcher with proper context preservation
-  - `modules/fit_module.py`: 15 blocks → ErrorDispatcher + added missing `_get_root_module()` method
-  - `tab_managers/histogram_tab.py`: 8 blocks → ErrorDispatcher with hierarchical error routing
-  - `tab_managers/browser_tab.py`: 10 blocks → ErrorDispatcher with context-specific routing
-- Updated all refactored exception handlers with appropriate error levels based on severity
-- Preserved fallback logic in critical paths (e.g., registry → direct import)
-- Validated all syntax - zero errors across all refactored modules
-- Updated ARCHITECTURE_REVIEW.md with comprehensive ErrorDispatcher documentation
+#### 2026-02-20 (Histogram tab)
+- Fixed `on_histogram_closed` callback arity (was passing 2 args, interface expects 1).
+- Replaced flat `pack(side=LEFT)` axis-control row with compact 6-row grid layout (Title on top).
+- Switched range vars from `DoubleVar` to `StringVar` with `f"{val:.1f}"` format for consistent 1-decimal display.
+- Fixed axis label key mismatch (`xlabel`→`xtitle`, `ylabel`→`ytitle`) so label entries apply to rendered histogram.
+- Added proportional scroll speed: step = 1% of axis max per tick.
+- Added log-scale scroll: multiplicative step (×10^0.05 ≈ 1.12 per tick) when Log X/Y is active.
+- Hard-max clamping: scroll and entry snap to histogram's original max silently (no dialog).
+- Added auto-render on every entry change via `trace_add("write", ...)` on all StringVars.
+- Added Reset button, Show Markers checkbox, and Title entry to control panel.
+- Extracted calculation logic into new `modules/histogram_controls_module.py`.
+- Extracted peak-finder panel into `HistogramPreviewRenderer._build_peak_panel()`.
+- Added peak finder panel: Peaks treeview, manual entry, Find Peaks / Clear buttons, auto-find 200 ms after open.
+- Rewrote test suite: 65 UX-driven tests across 10 classes.
 
 ### 2024-2025
 - Initial implementation and architecture notes.
 - Early feature registration and tab management patterns.
 
-### See AGENT_CONTEXT.md, IMPLEMENTATION_SUMMARY.md, USER_GUIDE.md for current architecture and usage.
+### See AGENT_CONTEXT.md and USER_GUIDE.md for current architecture and usage.

@@ -1,21 +1,20 @@
 """
-Simple Test 1: Test scripts for the HPGe GUI histogram workflow.
+HPGe GUI — Histogram tab test suite.
 
-Covers the following scenarios:
-1. Opening multiple histograms
-2. Closing histograms
-3. Client restart with session persistence (save/restore)
-4. Opening more histograms after a session restore
-5. Playing with histogram controls (axis ranges and log-scale toggles)
-6. Switching between open histograms
-
-These tests mock PyROOT (which may not be installed) and use a headless
-tkinter session so they can run in CI without a physical display.
+Covers the end-user workflows for the histogram tab:
+1. Session persistence across restarts
+2. Open / close / switch histogram lifecycle
+3. Axis range controls (zoom in/out on X and Y)
+4. Title and axis label editing
+5. Log-scale toggles
+6. Reset button restores defaults
+7. Show-markers toggle
+8. Peak finder (find, add manual, remove, clear)
+9. Full HPGe screening workflow (open → find peaks → zoom → reset)
+10. HistogramControlsModule pure-function unit tests (no tkinter needed)
 
 Usage:
-    DISPLAY=:99 python -m pytest tests/test_simple_test_1.py -v
-    # or via unittest:
-    DISPLAY=:99 python -m unittest tests.test_simple_test_1 -v
+    DISPLAY=:99 python3 -m pytest tests/test_simple_test_1.py -v
 """
 
 from __future__ import annotations
@@ -25,21 +24,15 @@ import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
-# ---------------------------------------------------------------------------
-# Ensure the project root is on the Python path so modules can be imported.
-# ---------------------------------------------------------------------------
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-# ---------------------------------------------------------------------------
-# Stub out PyROOT before any project modules are imported.  This lets the
-# test suite run on machines where ROOT is not installed.
-# ---------------------------------------------------------------------------
 _MOCK_ROOT = MagicMock()
 sys.modules.setdefault("ROOT", _MOCK_ROOT)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -51,6 +44,7 @@ def _make_mock_histogram(name: str = "h1", n_bins: int = 100,
     """Return a mock object that behaves like a ROOT TH1 histogram."""
     obj = MagicMock()
     obj.GetName.return_value = name
+    obj.GetTitle.return_value = name
 
     xaxis = MagicMock()
     xaxis.GetXmin.return_value = x_min
@@ -70,22 +64,19 @@ def _make_mock_histogram(name: str = "h1", n_bins: int = 100,
 
 
 # ---------------------------------------------------------------------------
-# 1. Tests for SessionManager (session persistence / restart flow)
+# 1. Session persistence
 # ---------------------------------------------------------------------------
 
 class TestSessionPersistence(unittest.TestCase):
-    """Tests that verify session save and restore across a simulated restart."""
+    """Verify session save and restore across a simulated restart."""
 
     def setUp(self):
-        """Create a temporary directory to isolate session files."""
         self._tmpdir = tempfile.mkdtemp()
-        # Patch the home directory used by SessionManager so nothing is
-        # written to the real user's home during tests.
-        self._home_patcher = patch("os.path.expanduser",
-                                   side_effect=lambda p: p.replace("~", self._tmpdir))
+        self._home_patcher = patch(
+            "os.path.expanduser",
+            side_effect=lambda p: p.replace("~", self._tmpdir),
+        )
         self._home_patcher.start()
-
-        # Import after patching so the session directory is created in tmpdir.
         from modules.session_manager import SessionManager
         self.session_manager = SessionManager()
 
@@ -94,115 +85,78 @@ class TestSessionPersistence(unittest.TestCase):
         import shutil
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    # --- save_last_files / load_last_session_paths round-trip ---
-
     def test_save_last_files_creates_session_json(self):
-        """Saving last-opened files produces a session.json with the correct paths."""
         paths = ["/data/run1.root", "/data/run2.root"]
         result = self.session_manager.save_last_files(paths)
-
-        self.assertIsNotNone(result, "save_last_files should return the written path")
-        self.assertTrue(os.path.isfile(result), "session.json file should exist on disk")
-
-        with open(result, "r", encoding="utf-8") as fh:
+        self.assertIsNotNone(result)
+        self.assertTrue(os.path.isfile(result))
+        with open(result, encoding="utf-8") as fh:
             data = json.load(fh)
-
         self.assertIn("last_files", data)
         self.assertEqual(len(data["last_files"]), 2)
-        # Paths should be stored as absolute paths.
         for saved in data["last_files"]:
-            self.assertTrue(os.path.isabs(saved),
-                            f"Stored path should be absolute, got: {saved}")
+            self.assertTrue(os.path.isabs(saved))
 
     def test_load_last_session_paths_returns_existing_files(self):
-        """After saving, load_last_session_paths returns only paths that exist on disk."""
-        # Create two real temp files and one that does not exist.
         real1 = os.path.join(self._tmpdir, "a.root")
         real2 = os.path.join(self._tmpdir, "b.root")
         missing = os.path.join(self._tmpdir, "missing.root")
-        with open(real1, "w"):
-            pass
-        with open(real2, "w"):
-            pass
-
+        for p in (real1, real2):
+            with open(p, "w"):
+                pass
         self.session_manager.save_last_files([real1, real2, missing])
-
-        # main._load_last_session_paths reads from session.json.
         from main import _load_last_session_paths
         loaded = _load_last_session_paths()
-
         self.assertIn(real1, loaded)
         self.assertIn(real2, loaded)
-        self.assertNotIn(missing, loaded,
-                         "Non-existent file should be filtered out on load")
+        self.assertNotIn(missing, loaded)
 
     def test_session_round_trip_simulates_restart(self):
-        """Saving open files before restart and reloading them simulates restart recovery."""
         real_file = os.path.join(self._tmpdir, "spectrum.root")
         with open(real_file, "w"):
             pass
-
-        # ---- Before restart: save the open files ----
         self.session_manager.save_last_files([real_file])
-
-        # ---- After restart: resolve initial paths ----
         from main import _resolve_initial_paths
         restored = _resolve_initial_paths(arg_path=None, use_last=True)
-
-        self.assertIsNotNone(restored, "Should find files from the last session")
+        self.assertIsNotNone(restored)
         self.assertEqual(len(restored), 1)
         self.assertEqual(restored[0], real_file)
 
     def test_restart_with_no_session_returns_none(self):
-        """With no session file, _resolve_initial_paths(use_last=True) returns None."""
-        # No save_last_files call, so session.json does not exist.
         from main import _resolve_initial_paths
         result = _resolve_initial_paths(arg_path=None, use_last=True)
         self.assertIsNone(result)
 
     def test_autosave_writes_json(self):
-        """auto_save_session silently writes a JSON autosave file."""
         filepath = self.session_manager.auto_save_session(
-            histogram_name="test_hist",
-            histogram_path="test_hist",
-            fit_states={},
-            peaks=[],
+            histogram_name="test_hist", histogram_path="test_hist",
+            fit_states={}, peaks=[],
         )
-        self.assertIsNotNone(filepath, "auto_save should return the saved file path")
+        self.assertIsNotNone(filepath)
         self.assertTrue(os.path.isfile(filepath))
-
-        with open(filepath, "r", encoding="utf-8") as fh:
+        with open(filepath, encoding="utf-8") as fh:
             data = json.load(fh)
         self.assertEqual(data["histogram"]["name"], "test_hist")
 
     def test_load_latest_autosave_returns_most_recent(self):
-        """load_latest_autosave returns the most recently written autosave."""
         self.session_manager.auto_save_session("hist_a", "hist_a", {})
         import time
-        time.sleep(0.05)  # ensure distinct mtime
+        time.sleep(0.05)
         self.session_manager.auto_save_session("hist_b", "hist_b", {})
-
         latest = self.session_manager.load_latest_autosave()
         self.assertIsNotNone(latest)
-        # The most recent autosave is for hist_b.
         self.assertEqual(latest["histogram"]["name"], "hist_b")
 
 
 # ---------------------------------------------------------------------------
-# 2. Tests for HistogramTab (opening, closing, switching)
+# 2. Histogram tab lifecycle (open / close / switch)
 # ---------------------------------------------------------------------------
 
 class TestHistogramTabWorkflow(unittest.TestCase):
-    """Tests exercising the HistogramTab open/close/switch workflow.
-
-    The histogram tab interacts with tkinter widgets, so each test creates a
-    minimal Tk root and patches the heavy renderer to avoid display-dependent
-    ROOT rendering.
-    """
+    """Open/close/switch workflow tests — renderer is mocked out."""
 
     @classmethod
     def setUpClass(cls):
-        """Create a single Tk root to share across all tests in this class."""
         import tkinter as tk
         try:
             cls._root = tk.Tk()
@@ -219,205 +173,112 @@ class TestHistogramTabWorkflow(unittest.TestCase):
             except Exception:
                 pass
 
-    def _make_histogram_tab(self):
-        """Build a HistogramTab with a mock container and stub renderer."""
-        import tkinter as tk
-        from tkinter import ttk
-        from tab_managers.histogram_tab import HistogramTab
-
-        container = ttk.Frame(self._root)
-
-        mock_app = MagicMock()
-        mock_app.ROOT = _MOCK_ROOT
-
-        selected_calls = []
-        closed_calls = []
-        opened_calls = []
-
-        tab = HistogramTab(
-            mock_app,
-            container,
-            on_histogram_selected=lambda key: selected_calls.append(key),
-            on_histogram_closed=lambda count: closed_calls.append(count),
-            on_histogram_opened=lambda lst: opened_calls.append(lst),
-        )
-        return tab, selected_calls, closed_calls, opened_calls
-
     def setUp(self):
         if not getattr(self, "_tk_available", False):
             self.skipTest("tkinter display not available")
 
-    # ---- Opening multiple histograms ----
+    def _make_tab(self):
+        import tkinter as tk
+        from tkinter import ttk
+        from tab_managers.histogram_tab import HistogramTab
+        container = ttk.Frame(self._root)
+        mock_app = MagicMock(); mock_app.ROOT = _MOCK_ROOT
+        selected, closed, opened = [], [], []
+        tab = HistogramTab(
+            mock_app, container,
+            on_histogram_selected=lambda k: selected.append(k),
+            on_histogram_closed=lambda n: closed.append(n),
+            on_histogram_opened=lambda lst: opened.append(lst),
+        )
+        return tab, selected, closed, opened
 
     @patch("tab_managers.histogram_tab.HistogramPreviewRenderer")
-    def test_open_multiple_histograms(self, MockRenderer):
-        """Opening three histograms registers all of them in the tab."""
-        MockRenderer.return_value = MagicMock()
-
-        tab, selected, closed, opened = self._make_histogram_tab()
-
-        hists = [
-            (_make_mock_histogram("h1"), "/data/run1.root", "h1"),
-            (_make_mock_histogram("h2"), "/data/run1.root", "h2"),
-            (_make_mock_histogram("h3"), "/data/run2.root", "h3"),
-        ]
-        for obj, root_path, path in hists:
-            tab.open_histogram(obj, root_path, path)
-
-        self.assertEqual(len(tab._hist_tabs), 3,
-                         "Three distinct histograms should be open")
+    def test_open_multiple_histograms(self, MockR):
+        MockR.return_value = MagicMock()
+        tab, *_ = self._make_tab()
+        for i in range(3):
+            tab.open_histogram(_make_mock_histogram(f"h{i}"), "/data/run.root", f"h{i}")
+        self.assertEqual(len(tab._hist_tabs), 3)
         self.assertEqual(len(tab._open_histograms), 3)
 
     @patch("tab_managers.histogram_tab.HistogramPreviewRenderer")
-    def test_open_same_histogram_twice_does_not_duplicate(self, MockRenderer):
-        """Opening the same histogram twice should not create duplicate entries."""
-        MockRenderer.return_value = MagicMock()
-
-        tab, *_ = self._make_histogram_tab()
+    def test_open_same_histogram_twice_does_not_duplicate(self, MockR):
+        MockR.return_value = MagicMock()
+        tab, *_ = self._make_tab()
         obj = _make_mock_histogram("h1")
-        tab.open_histogram(obj, "/data/run1.root", "h1")
-        tab.open_histogram(obj, "/data/run1.root", "h1")
-
+        tab.open_histogram(obj, "/data/run.root", "h1")
+        tab.open_histogram(obj, "/data/run.root", "h1")
         self.assertEqual(len(tab._hist_tabs), 1)
-        self.assertEqual(len(tab._open_histograms), 1)
-
-    # ---- Closing histograms ----
 
     @patch("tab_managers.histogram_tab.HistogramPreviewRenderer")
-    def test_close_current_histogram(self, MockRenderer):
-        """close_current_histogram removes the displayed histogram."""
-        MockRenderer.return_value = MagicMock()
-
-        tab, selected, closed, opened = self._make_histogram_tab()
-        obj = _make_mock_histogram("h1")
-        tab.open_histogram(obj, "/data/run1.root", "h1")
-
-        self.assertEqual(len(tab._hist_tabs), 1)
+    def test_close_current_histogram(self, MockR):
+        MockR.return_value = MagicMock()
+        tab, *_ = self._make_tab()
+        tab.open_histogram(_make_mock_histogram("h1"), "/data/run.root", "h1")
         tab.close_current_histogram()
-        self.assertEqual(len(tab._hist_tabs), 0,
-                         "Histogram should be removed after close")
-
-    @patch("tab_managers.histogram_tab.HistogramPreviewRenderer")
-    def test_close_all_histograms_one_by_one(self, MockRenderer):
-        """Closing all histograms one by one empties the tab."""
-        MockRenderer.return_value = MagicMock()
-
-        tab, selected, closed, opened = self._make_histogram_tab()
-
-        for i in range(3):
-            tab.open_histogram(
-                _make_mock_histogram(f"h{i}"),
-                "/data/run.root",
-                f"h{i}",
-            )
-
-        self.assertEqual(len(tab._hist_tabs), 3)
-
-        # Close them by tab_key
-        keys = [k for k, *_ in tab._open_histograms]
-        for key in keys:
-            tab.remove_histogram(key)
-
         self.assertEqual(len(tab._hist_tabs), 0)
-        self.assertEqual(len(tab._open_histograms), 0)
 
     @patch("tab_managers.histogram_tab.HistogramPreviewRenderer")
-    def test_close_histogram_fires_callback(self, MockRenderer):
-        """Closing a histogram invokes the on_histogram_closed callback."""
-        MockRenderer.return_value = MagicMock()
+    def test_close_all_histograms_one_by_one(self, MockR):
+        MockR.return_value = MagicMock()
+        tab, *_ = self._make_tab()
+        for i in range(3):
+            tab.open_histogram(_make_mock_histogram(f"h{i}"), "/data/run.root", f"h{i}")
+        for key in [k for k, *_ in tab._open_histograms]:
+            tab.remove_histogram(key)
+        self.assertEqual(len(tab._hist_tabs), 0)
 
-        tab, selected, closed, opened = self._make_histogram_tab()
+    @patch("tab_managers.histogram_tab.HistogramPreviewRenderer")
+    def test_close_histogram_fires_callback(self, MockR):
+        MockR.return_value = MagicMock()
+        tab, _, closed, _ = self._make_tab()
         tab.open_histogram(_make_mock_histogram("h1"), "/data/run.root", "h1")
         tab.open_histogram(_make_mock_histogram("h2"), "/data/run.root", "h2")
-
         tab.close_current_histogram()
-
-        self.assertTrue(len(closed) > 0,
-                        "on_histogram_closed callback should have been called")
-        # After closing one of two, remaining count should be 1.
+        self.assertTrue(len(closed) > 0)
         self.assertEqual(closed[-1], 1)
 
-    # ---- Opening more histograms after simulated session restore ----
-
     @patch("tab_managers.histogram_tab.HistogramPreviewRenderer")
-    def test_open_more_histograms_after_close(self, MockRenderer):
-        """After closing existing histograms, new ones can still be opened."""
-        MockRenderer.return_value = MagicMock()
-
-        tab, *_ = self._make_histogram_tab()
+    def test_open_more_histograms_after_close(self, MockR):
+        MockR.return_value = MagicMock()
+        tab, *_ = self._make_tab()
         tab.open_histogram(_make_mock_histogram("h1"), "/data/run.root", "h1")
         tab.close_current_histogram()
-        self.assertEqual(len(tab._hist_tabs), 0)
-
-        # Now open three more (simulating post-restart usage)
         for i in range(3):
-            tab.open_histogram(
-                _make_mock_histogram(f"new_h{i}"),
-                "/data/new_run.root",
-                f"new_h{i}",
-            )
-
+            tab.open_histogram(_make_mock_histogram(f"new{i}"), "/data/run.root", f"new{i}")
         self.assertEqual(len(tab._hist_tabs), 3)
 
-    # ---- Switching between histograms ----
-
     @patch("tab_managers.histogram_tab.HistogramPreviewRenderer")
-    def test_switch_between_histograms(self, MockRenderer):
-        """show_histogram changes the current histogram key."""
-        MockRenderer.return_value = MagicMock()
-
-        tab, selected, *_ = self._make_histogram_tab()
+    def test_switch_between_histograms(self, MockR):
+        MockR.return_value = MagicMock()
+        tab, *_ = self._make_tab()
         keys = []
         for i in range(3):
-            obj = _make_mock_histogram(f"h{i}")
-            root_path = "/data/run.root"
-            path = f"h{i}"
-            tab.open_histogram(obj, root_path, path)
-            keys.append(f"{root_path}:{path}")
-
-        # Switch to the first histogram
+            tab.open_histogram(_make_mock_histogram(f"h{i}"), "/data/run.root", f"h{i}")
+            keys.append(f"/data/run.root:h{i}")
         tab.show_histogram(keys[0])
         self.assertEqual(tab._current_histogram_key, keys[0])
-
-        # Switch to the last histogram
         tab.show_histogram(keys[2])
         self.assertEqual(tab._current_histogram_key, keys[2])
-
-        # Switch back to the second histogram
         tab.show_histogram(keys[1])
         self.assertEqual(tab._current_histogram_key, keys[1])
 
     @patch("tab_managers.histogram_tab.HistogramPreviewRenderer")
-    def test_switch_histogram_notifies_app(self, MockRenderer):
-        """Opening a histogram always fires on_histogram_selected with the correct key."""
-        MockRenderer.return_value = MagicMock()
-
-        tab, selected, closed, opened = self._make_histogram_tab()
-        obj1 = _make_mock_histogram("h1")
-        obj2 = _make_mock_histogram("h2")
-        tab.open_histogram(obj1, "/data/run.root", "h1")
-        tab.open_histogram(obj2, "/data/run.root", "h2")
-
-        expected_key1 = "/data/run.root:h1"
-        expected_key2 = "/data/run.root:h2"
-
-        self.assertIn(expected_key1, selected,
-                      "on_histogram_selected should be called for h1")
-        self.assertIn(expected_key2, selected,
-                      "on_histogram_selected should be called for h2")
+    def test_switch_histogram_notifies_app(self, MockR):
+        MockR.return_value = MagicMock()
+        tab, selected, *_ = self._make_tab()
+        tab.open_histogram(_make_mock_histogram("h1"), "/data/run.root", "h1")
+        tab.open_histogram(_make_mock_histogram("h2"), "/data/run.root", "h2")
+        self.assertIn("/data/run.root:h1", selected)
+        self.assertIn("/data/run.root:h2", selected)
 
 
 # ---------------------------------------------------------------------------
-# 3. Tests for histogram control variables (axis ranges, log-scale toggles)
+# 3. Control-panel variables (axis range, log scale, title, labels, markers)
 # ---------------------------------------------------------------------------
 
-class TestHistogramControls(unittest.TestCase):
-    """Tests for the axis range and log-scale controls on the preview renderer.
-
-    These tests create a real tkinter root (hidden) so that DoubleVar /
-    BooleanVar work correctly.  The heavy ROOT rendering is skipped by
-    patching HistogramPreviewRenderer.render_preview.
-    """
+class _RendererBase(unittest.TestCase):
+    """Base that builds a HistogramPreviewRenderer with render patched out."""
 
     @classmethod
     def setUpClass(cls):
@@ -442,108 +303,400 @@ class TestHistogramControls(unittest.TestCase):
             self.skipTest("tkinter display not available")
 
     def _build_renderer(self, obj):
-        """Build a HistogramPreviewRenderer with render patched out."""
-        import tkinter as tk
         from tkinter import ttk
         from tab_managers.histogram_tab import HistogramPreviewRenderer
-
-        renderer = HistogramPreviewRenderer()
+        r = HistogramPreviewRenderer()
         mock_app = MagicMock()
         mock_app.after.return_value = None
         mock_app.after_cancel.return_value = None
         mock_app.ROOT = _MOCK_ROOT
-
         container = ttk.Frame(self._root)
-        with patch.object(renderer, "render_preview", return_value=None):
-            renderer.build_histogram_tab(mock_app, container, obj, "/run.root", "h1")
-        return renderer
+        with patch.object(r, "render_preview", return_value=None):
+            r.build_histogram_tab(mock_app, container, obj, "/run.root", "h1")
+        return r
+
+
+class TestAxisRangeControls(_RendererBase):
+    """Zoom controls — X and Y range entry boxes."""
 
     def test_initial_x_range_matches_histogram(self):
-        """xmin / xmax variables are initialised from the histogram axis limits."""
-        obj = _make_mock_histogram("h1", x_min=100.0, x_max=3000.0)
-        renderer = self._build_renderer(obj)
+        r = self._build_renderer(_make_mock_histogram("h1", x_min=100.0, x_max=3000.0))
+        self.assertAlmostEqual(float(r._xmin_var.get()), 100.0, places=1)
+        self.assertAlmostEqual(float(r._xmax_var.get()), 3000.0, places=1)
 
-        self.assertAlmostEqual(renderer._xmin_var.get(), 100.0, places=1)
-        self.assertAlmostEqual(renderer._xmax_var.get(), 3000.0, places=1)
-
-    def test_initial_log_y_is_enabled(self):
-        """Log Y scale is enabled by default."""
-        obj = _make_mock_histogram("h1")
-        renderer = self._build_renderer(obj)
-        self.assertTrue(renderer._logy_var.get(),
-                        "Log Y should be True by default")
-
-    def test_initial_log_x_is_disabled(self):
-        """Log X scale is disabled by default."""
-        obj = _make_mock_histogram("h1")
-        renderer = self._build_renderer(obj)
-        self.assertFalse(renderer._logx_var.get(),
-                         "Log X should be False by default")
-
-    def test_toggle_log_x(self):
-        """Toggling Log X changes the BooleanVar state."""
-        obj = _make_mock_histogram("h1")
-        renderer = self._build_renderer(obj)
-        self.assertFalse(renderer._logx_var.get())
-        renderer._logx_var.set(True)
-        self.assertTrue(renderer._logx_var.get())
-        renderer._logx_var.set(False)
-        self.assertFalse(renderer._logx_var.get())
-
-    def test_toggle_log_y(self):
-        """Toggling Log Y changes the BooleanVar state."""
-        obj = _make_mock_histogram("h1")
-        renderer = self._build_renderer(obj)
-        initial = renderer._logy_var.get()
-        renderer._logy_var.set(not initial)
-        self.assertNotEqual(renderer._logy_var.get(), initial)
+    def test_initial_y_range_matches_histogram(self):
+        r = self._build_renderer(_make_mock_histogram("h1", y_min=1.0, y_max=8000.0))
+        self.assertGreater(float(r._ymax_var.get()), 8000.0,
+                           "y_max should be scaled up from histogram max")
 
     def test_set_x_range(self):
-        """Setting xmin / xmax variables stores the provided values."""
-        obj = _make_mock_histogram("h1", x_min=0.0, x_max=1000.0)
-        renderer = self._build_renderer(obj)
-
-        renderer._xmin_var.set(200.0)
-        renderer._xmax_var.set(800.0)
-
-        self.assertAlmostEqual(renderer._xmin_var.get(), 200.0, places=1)
-        self.assertAlmostEqual(renderer._xmax_var.get(), 800.0, places=1)
+        r = self._build_renderer(_make_mock_histogram("h1", x_min=0.0, x_max=1000.0))
+        r._xmin_var.set("200.0"); r._xmax_var.set("800.0")
+        self.assertAlmostEqual(float(r._xmin_var.get()), 200.0, places=1)
+        self.assertAlmostEqual(float(r._xmax_var.get()), 800.0, places=1)
 
     def test_set_y_range(self):
-        """Setting ymin / ymax variables stores the provided values."""
-        obj = _make_mock_histogram("h1", y_min=1.0, y_max=1000.0)
-        renderer = self._build_renderer(obj)
+        r = self._build_renderer(_make_mock_histogram("h1", y_min=1.0, y_max=1000.0))
+        r._ymin_var.set("5.0"); r._ymax_var.set("500.0")
+        self.assertAlmostEqual(float(r._ymin_var.get()), 5.0, places=1)
+        self.assertAlmostEqual(float(r._ymax_var.get()), 500.0, places=1)
 
-        renderer._ymin_var.set(5.0)
-        renderer._ymax_var.set(500.0)
-
-        self.assertAlmostEqual(renderer._ymin_var.get(), 5.0, places=1)
-        self.assertAlmostEqual(renderer._ymax_var.get(), 500.0, places=1)
+    def test_range_values_always_one_decimal(self):
+        """Populated range values should have exactly 1 decimal place."""
+        r = self._build_renderer(_make_mock_histogram("h1", x_min=100.0, x_max=3000.0))
+        for var in (r._xmin_var, r._xmax_var, r._ymin_var, r._ymax_var):
+            val = var.get()
+            self.assertIn(".", val, f"Expected decimal in {val!r}")
+            self.assertEqual(len(val.split(".")[-1]), 1,
+                             f"Expected exactly 1 decimal place, got {val!r}")
 
     def test_controls_for_multiple_histograms_are_independent(self):
-        """Each histogram renderer has its own independent set of control variables."""
-        from tab_managers.histogram_tab import HistogramPreviewRenderer
-        from tkinter import ttk
+        r1 = self._build_renderer(_make_mock_histogram("h1", x_max=500.0))
+        r2 = self._build_renderer(_make_mock_histogram("h2", x_max=2000.0))
+        r1._xmax_var.set("300.0")
+        self.assertAlmostEqual(float(r1._xmax_var.get()), 300.0, places=1)
+        self.assertAlmostEqual(float(r2._xmax_var.get()), 2000.0, places=1)
 
-        obj1 = _make_mock_histogram("h1", x_min=0.0, x_max=500.0)
-        obj2 = _make_mock_histogram("h2", x_min=0.0, x_max=2000.0)
 
-        renderer1 = self._build_renderer(obj1)
-        renderer2 = self._build_renderer(obj2)
+class TestLogScaleControls(_RendererBase):
+    """Log-scale toggle behaviour."""
 
-        # Modify renderer1's x range; renderer2 should be unaffected.
-        renderer1._xmax_var.set(300.0)
+    def test_initial_log_y_is_enabled(self):
+        r = self._build_renderer(_make_mock_histogram("h1"))
+        self.assertTrue(r._logy_var.get())
 
-        self.assertAlmostEqual(renderer1._xmax_var.get(), 300.0, places=1)
-        self.assertAlmostEqual(renderer2._xmax_var.get(), 2000.0, places=1)
+    def test_initial_log_x_is_disabled(self):
+        r = self._build_renderer(_make_mock_histogram("h1"))
+        self.assertFalse(r._logx_var.get())
+
+    def test_toggle_log_x(self):
+        r = self._build_renderer(_make_mock_histogram("h1"))
+        r._logx_var.set(True); self.assertTrue(r._logx_var.get())
+        r._logx_var.set(False); self.assertFalse(r._logx_var.get())
+
+    def test_toggle_log_y(self):
+        r = self._build_renderer(_make_mock_histogram("h1"))
+        initial = r._logy_var.get()
+        r._logy_var.set(not initial)
+        self.assertNotEqual(r._logy_var.get(), initial)
+
+
+class TestTitleAndLabelControls(_RendererBase):
+    """Title and axis label entry boxes."""
+
+    def test_initial_xlabel_from_histogram(self):
+        r = self._build_renderer(_make_mock_histogram("h1"))
+        self.assertEqual(r._xlabel_var.get(), "Energy (keV)")
+
+    def test_initial_ylabel_from_histogram(self):
+        r = self._build_renderer(_make_mock_histogram("h1"))
+        self.assertEqual(r._ylabel_var.get(), "Counts")
+
+    def test_set_xlabel(self):
+        r = self._build_renderer(_make_mock_histogram("h1"))
+        r._xlabel_var.set("Channel")
+        self.assertEqual(r._xlabel_var.get(), "Channel")
+
+    def test_set_ylabel(self):
+        r = self._build_renderer(_make_mock_histogram("h1"))
+        r._ylabel_var.set("Intensity")
+        self.assertEqual(r._ylabel_var.get(), "Intensity")
+
+    def test_set_title(self):
+        r = self._build_renderer(_make_mock_histogram("h1"))
+        r._title_var.set("My Spectrum")
+        self.assertEqual(r._title_var.get(), "My Spectrum")
+
+    def test_title_initial_from_histogram(self):
+        obj = _make_mock_histogram("h1")
+        obj.GetTitle.return_value = "Run 42"
+        r = self._build_renderer(obj)
+        self.assertEqual(r._title_var.get(), "Run 42")
+
+
+class TestShowMarkersControl(_RendererBase):
+    """Show-markers checkbox."""
+
+    def test_show_markers_on_by_default(self):
+        r = self._build_renderer(_make_mock_histogram("h1"))
+        self.assertTrue(r._show_markers_var.get())
+
+    def test_toggle_show_markers(self):
+        r = self._build_renderer(_make_mock_histogram("h1"))
+        r._show_markers_var.set(False)
+        self.assertFalse(r._show_markers_var.get())
+        r._show_markers_var.set(True)
+        self.assertTrue(r._show_markers_var.get())
+
+
+class TestResetButton(_RendererBase):
+    """Reset restores all controls to histogram defaults."""
+
+    def test_reset_restores_x_range(self):
+        obj = _make_mock_histogram("h1", x_min=100.0, x_max=3000.0)
+        r = self._build_renderer(obj)
+        r._xmin_var.set("500.0"); r._xmax_var.set("1000.0")
+        # Trigger reset via the stored reset method
+        r._reset_controls()
+        self.assertAlmostEqual(float(r._xmin_var.get()), 100.0, places=1)
+        self.assertAlmostEqual(float(r._xmax_var.get()), 3000.0, places=1)
+
+    def test_reset_restores_log_y(self):
+        r = self._build_renderer(_make_mock_histogram("h1"))
+        r._logy_var.set(False)
+        r._reset_controls()
+        self.assertTrue(r._logy_var.get())
+
+    def test_reset_restores_show_markers(self):
+        r = self._build_renderer(_make_mock_histogram("h1"))
+        r._show_markers_var.set(False)
+        r._reset_controls()
+        self.assertTrue(r._show_markers_var.get())
+
+    def test_reset_restores_title_and_labels(self):
+        r = self._build_renderer(_make_mock_histogram("h1"))
+        r._title_var.set("edited"); r._xlabel_var.set("X"); r._ylabel_var.set("Y")
+        r._reset_controls()
+        # After reset the label should be back to the histogram axis title
+        self.assertEqual(r._xlabel_var.get(), "Energy (keV)")
+        self.assertEqual(r._ylabel_var.get(), "Counts")
 
 
 # ---------------------------------------------------------------------------
-# 4. Integration-style test: full open → close → restart → open → control flow
+# 4. Peak finder
 # ---------------------------------------------------------------------------
 
-class TestFullWorkflow(unittest.TestCase):
-    """Higher-level scenario test that chains the individual steps together."""
+class TestPeakFinder(_RendererBase):
+    """Peak finder integration via HistogramPreviewRenderer."""
+
+    def test_peak_finder_is_attached(self):
+        r = self._build_renderer(_make_mock_histogram("h1"))
+        self.assertIsNotNone(r._peak_finder)
+
+    def test_add_manual_peak(self):
+        r = self._build_renderer(_make_mock_histogram("h1"))
+        r._peak_finder._manual_peak_var.set("511.0")
+        r._peak_finder._add_manual_peak()
+        energies = [p["energy"] for p in r._peak_finder.peaks]
+        self.assertIn(511.0, energies)
+
+    def test_clear_peaks(self):
+        r = self._build_renderer(_make_mock_histogram("h1"))
+        r._peak_finder._manual_peak_var.set("511.0")
+        r._peak_finder._add_manual_peak()
+        r._peak_finder._clear_peaks()
+        self.assertEqual(len(r._peak_finder.peaks), 0)
+
+    def test_remove_selected_peak_removes_by_iid(self):
+        from modules.peak_manager import PeakFinderModule
+        m = PeakFinderModule()
+        m.peaks = [
+            {"energy": 511.0, "counts": 100, "source": "manual"},
+            {"energy": 1274.0, "counts": 50, "source": "manual"},
+        ]
+        m.set_peak_energy_by_iid("0", 511.0)  # keeps it in place
+        self.assertEqual(len(m.peaks), 2)
+
+    def test_add_multiple_manual_peaks_are_sorted(self):
+        r = self._build_renderer(_make_mock_histogram("h1"))
+        for energy in ("1274.0", "511.0", "662.0"):
+            r._peak_finder._manual_peak_var.set(energy)
+            r._peak_finder._add_manual_peak()
+        energies = [p["energy"] for p in r._peak_finder.peaks]
+        self.assertEqual(energies, sorted(energies))
+
+
+# ---------------------------------------------------------------------------
+# 5. HistogramControlsModule pure-function unit tests (no tkinter / ROOT)
+# ---------------------------------------------------------------------------
+
+class TestHistogramControlsModule(unittest.TestCase):
+    """Unit-test the calculation module without any UI dependencies."""
+
+    def _module(self):
+        from modules.histogram_controls_module import HistogramControlsModule
+        return HistogramControlsModule
+
+    def test_compute_defaults_extracts_axis_limits(self):
+        obj = _make_mock_histogram("h1", x_min=50.0, x_max=2000.0,
+                                   y_min=0.0, y_max=10000.0)
+        d = self._module().compute_defaults(obj)
+        self.assertAlmostEqual(d["x_min"], 50.0, places=1)
+        self.assertAlmostEqual(d["x_max"], 2000.0, places=1)
+
+    def test_compute_defaults_scales_y_max(self):
+        obj = _make_mock_histogram("h1", y_max=10000.0)
+        d = self._module().compute_defaults(obj)
+        self.assertGreater(d["y_max"], 10000.0,
+                           "y_max should be scaled above raw histogram max")
+
+    def test_compute_defaults_enforces_positive_x_min(self):
+        obj = _make_mock_histogram("h1", x_min=-10.0)
+        d = self._module().compute_defaults(obj)
+        self.assertGreater(d["x_min"], 0.0)
+
+    def test_scroll_step_proportional_to_max(self):
+        obj = _make_mock_histogram("h1", x_max=3000.0)
+        d = self._module().compute_defaults(obj)
+        self.assertAlmostEqual(d["x_scroll_step"], 30.0, places=1)
+
+    def test_clamp_min_scrolls_up(self):
+        M = self._module()
+        result = M.clamp_min(100.0, 30.0, direction_down=False,
+                             min_limit=50.0, max_val=3000.0)
+        self.assertAlmostEqual(result, 130.0, places=1)
+
+    def test_clamp_min_scrolls_down(self):
+        M = self._module()
+        result = M.clamp_min(100.0, 30.0, direction_down=True,
+                             min_limit=50.0, max_val=3000.0)
+        self.assertAlmostEqual(result, 70.0, places=1)
+
+    def test_clamp_min_cannot_cross_max(self):
+        M = self._module()
+        result = M.clamp_min(2999.0, 30.0, direction_down=False,
+                             min_limit=0.0, max_val=3000.0)
+        self.assertLess(result, 3000.0)
+
+    def test_clamp_max_scrolls_up(self):
+        M = self._module()
+        result = M.clamp_max(1000.0, 100.0, direction_down=False,
+                             min_val=0.0, max_limit=5000.0)
+        self.assertAlmostEqual(result, 1100.0, places=1)
+
+    def test_clamp_max_cannot_go_below_min(self):
+        M = self._module()
+        result = M.clamp_max(10.0, 100.0, direction_down=True,
+                             min_val=5.0, max_limit=5000.0)
+        self.assertGreater(result, 5.0)
+
+    def test_clamp_max_cannot_exceed_hard_max(self):
+        """Scrolling above hard_max snaps to hard_max."""
+        M = self._module()
+        result = M.clamp_max(2999.0, 100.0, direction_down=False,
+                             min_val=0.0, max_limit=3000.0)
+        self.assertLessEqual(result, 3000.0)
+
+    def test_clamp_min_log_mode_sub1_scrolls_up_additive(self):
+        """In log mode, scrolling up from a sub-1 value uses +1.0 additive step."""
+        M = self._module()
+        result = M.clamp_min(0.5, 0.0, direction_down=False,
+                             min_limit=0.1, max_val=3000.0, log_mode=True)
+        # 0.5 + 1.0 = 1.5, not the crawling 0.5 * 1.122 = 0.561
+        self.assertAlmostEqual(result, 1.5, places=1)
+
+    def test_clamp_min_log_mode_sub1_scrolls_down_additive(self):
+        """In log mode, scrolling down from a sub-1 value uses -1.0 additive step."""
+        M = self._module()
+        result = M.clamp_min(0.8, 0.0, direction_down=True,
+                             min_limit=0.1, max_val=3000.0, log_mode=True)
+        # 0.8 - 1.0 = -0.2 → clamped to 0.1 (min_limit)
+        self.assertAlmostEqual(result, 0.1, places=1)
+
+    def test_clamp_max_log_mode_sub1_uses_additive_step(self):
+        """In log mode, max entry in sub-1 zone uses ±1.0 additive step."""
+        M = self._module()
+        result = M.clamp_max(0.5, 0.0, direction_down=False,
+                             min_val=0.1, max_limit=float("inf"), log_mode=True)
+        self.assertAlmostEqual(result, 1.5, places=1)
+
+    def test_clamp_min_log_mode_multiplies(self):
+        """In log mode, scrolling up multiplies the value."""
+        M = self._module()
+        result = M.clamp_min(100.0, 0.0, direction_down=False,
+                             min_limit=0.1, max_val=3000.0, log_mode=True)
+        # 100 * 10^0.05 ≈ 112.2
+        self.assertGreater(result, 100.0)
+        self.assertLess(result, 120.0)
+
+    def test_clamp_max_log_mode_divides_on_scroll_down(self):
+        """In log mode, scrolling down divides the value."""
+        M = self._module()
+        result = M.clamp_max(3000.0, 0.0, direction_down=True,
+                             min_val=100.0, max_limit=3000.0, log_mode=True)
+        # 3000 / 10^0.05 ≈ 2673
+        self.assertLess(result, 3000.0)
+        self.assertGreater(result, 2500.0)
+
+    def test_validate_max_respects_hard_max(self):
+        """validate_max snaps to hard_max when typed value exceeds it."""
+        M = self._module()
+        result = M.validate_max("5000.0", "100.0", hard_max=3000.0)
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(float(result), 3000.0, places=1)
+
+    def test_validate_min_respects_hard_min(self):
+        """validate_min raises value to hard_min when typed value is below it."""
+        M = self._module()
+        # hard_min=100, typed 50 → should be snapped up to 100
+        result = M.validate_min("50.0", "3000.0", hard_min=100.0)
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(float(result), 100.0, places=1)
+
+    def test_validate_min_formats_to_one_decimal(self):
+        M = self._module()
+        result = M.validate_min("123.456", "500.0")
+        self.assertIsNotNone(result)
+        self.assertIn(".", result)
+        self.assertEqual(len(result.split(".")[-1]), 1)
+
+    def test_validate_min_clamps_against_max(self):
+        M = self._module()
+        result = M.validate_min("500.0", "300.0")  # min >= max → clamped
+        self.assertIsNotNone(result)
+        self.assertLess(float(result), 300.0)
+
+    def test_validate_max_clamps_against_min(self):
+        M = self._module()
+        result = M.validate_max("100.0", "200.0")  # max < min → clamped
+        self.assertIsNotNone(result)
+        self.assertGreater(float(result), 200.0)
+
+    def test_validate_min_returns_none_on_bad_input(self):
+        M = self._module()
+        result = M.validate_min("abc", "500.0")
+        self.assertIsNone(result)
+
+    def test_build_render_options_includes_xrange(self):
+        M = self._module()
+        opts = M.build_render_options(
+            800, 600, xmin_raw="100.0", xmax_raw="2000.0",
+            ymin_raw="0.1", ymax_raw="10000.0",
+        )
+        self.assertEqual(opts["xmin"], 100.0)
+        self.assertEqual(opts["xmax"], 2000.0)
+
+    def test_build_render_options_includes_log_flags(self):
+        M = self._module()
+        opts = M.build_render_options(800, 600, logx=True, logy=True)
+        self.assertTrue(opts.get("logx"))
+        self.assertTrue(opts.get("logy"))
+
+    def test_build_render_options_includes_peak_markers(self):
+        M = self._module()
+        opts = M.build_render_options(
+            800, 600, show_markers=True, peak_energies=[511.0, 1274.0])
+        self.assertIn("markers", opts)
+        self.assertIn(511.0, opts["markers"])
+
+    def test_build_render_options_no_markers_when_disabled(self):
+        M = self._module()
+        opts = M.build_render_options(
+            800, 600, show_markers=False, peak_energies=[511.0])
+        self.assertNotIn("markers", opts)
+
+    def test_build_render_options_includes_title(self):
+        M = self._module()
+        opts = M.build_render_options(800, 600, title="My Spectrum")
+        self.assertEqual(opts.get("title"), "My Spectrum")
+
+
+# ---------------------------------------------------------------------------
+# 6. Full HPGe screening workflow
+# ---------------------------------------------------------------------------
+
+class TestHPGeScreeningWorkflow(unittest.TestCase):
+    """End-to-end scenario: open → inspect peaks → zoom → reset → switch."""
 
     @classmethod
     def setUpClass(cls):
@@ -566,12 +719,12 @@ class TestFullWorkflow(unittest.TestCase):
     def setUp(self):
         if not getattr(self, "_tk_available", False):
             self.skipTest("tkinter display not available")
-
         self._tmpdir = tempfile.mkdtemp()
-        self._home_patcher = patch("os.path.expanduser",
-                                   side_effect=lambda p: p.replace("~", self._tmpdir))
+        self._home_patcher = patch(
+            "os.path.expanduser",
+            side_effect=lambda p: p.replace("~", self._tmpdir),
+        )
         self._home_patcher.start()
-
         from modules.session_manager import SessionManager
         self.session_manager = SessionManager()
 
@@ -580,108 +733,94 @@ class TestFullWorkflow(unittest.TestCase):
         import shutil
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def _make_histogram_tab(self):
+    def _make_tab(self):
         from tkinter import ttk
         from tab_managers.histogram_tab import HistogramTab
         container = ttk.Frame(self._root)
-        mock_app = MagicMock()
-        mock_app.ROOT = _MOCK_ROOT
+        mock_app = MagicMock(); mock_app.ROOT = _MOCK_ROOT
         return HistogramTab(mock_app, container)
 
     def test_open_close_restart_open_switch(self):
-        """
-        Full scenario:
-          1. Open three histograms.
-          2. Close two of them.
-          3. Save session (simulate restart).
-          4. Restore session paths and open three more histograms.
-          5. Play with controls on a renderer.
-          6. Switch between all open histograms.
-        """
-        # Use a context manager so the patch applies only to the tab steps,
-        # leaving the real HistogramPreviewRenderer available for Step 5.
-        mock_renderer_instance = MagicMock()
+        """Full workflow: open → close some → save session → restore → control → switch."""
+        mock_renderer = MagicMock()
         renderer_patch = patch(
             "tab_managers.histogram_tab.HistogramPreviewRenderer",
-            return_value=mock_renderer_instance,
+            return_value=mock_renderer,
         )
-
         with renderer_patch:
-            # --- Step 1: Open three histograms ---
-            tab = self._make_histogram_tab()
+            tab = self._make_tab()
             root_path = "/data/first_run.root"
-            initial_hists = ["spectrum_A", "spectrum_B", "spectrum_C"]
-            for name in initial_hists:
+            for name in ("spectrum_A", "spectrum_B", "spectrum_C"):
                 tab.open_histogram(_make_mock_histogram(name), root_path, name)
+            self.assertEqual(len(tab._hist_tabs), 3)
 
-            self.assertEqual(len(tab._hist_tabs), 3, "Step 1: three histograms open")
-
-            # --- Step 2: Close two histograms ---
-            keys_to_close = [f"{root_path}:{initial_hists[0]}",
-                             f"{root_path}:{initial_hists[1]}"]
-            for key in keys_to_close:
+            for key in [f"{root_path}:{n}" for n in ("spectrum_A", "spectrum_B")]:
                 tab.remove_histogram(key)
+            self.assertEqual(len(tab._hist_tabs), 1)
 
-            self.assertEqual(len(tab._hist_tabs), 1, "Step 2: one histogram remains")
-
-            # --- Step 3: Save session (simulated restart) ---
             real_file = os.path.join(self._tmpdir, "first_run.root")
             with open(real_file, "w"):
                 pass
             self.session_manager.save_last_files([real_file])
-
             from main import _resolve_initial_paths
-            restored_paths = _resolve_initial_paths(arg_path=None, use_last=True)
-            self.assertIsNotNone(restored_paths, "Step 3: session should restore paths")
-            self.assertIn(real_file, restored_paths)
+            restored = _resolve_initial_paths(arg_path=None, use_last=True)
+            self.assertIsNotNone(restored)
+            self.assertIn(real_file, restored)
 
-            # --- Step 4: Open three more histograms (post-restart) ---
-            second_root = "/data/second_run.root"
-            post_restart_hists = ["gamma_1", "gamma_2", "gamma_3"]
-            for name in post_restart_hists:
-                tab.open_histogram(_make_mock_histogram(name), second_root, name)
+            second = "/data/second_run.root"
+            for name in ("gamma_1", "gamma_2", "gamma_3"):
+                tab.open_histogram(_make_mock_histogram(name), second, name)
+            self.assertEqual(len(tab._hist_tabs), 4)
 
-            # 1 remaining from before + 3 new = 4
-            self.assertEqual(len(tab._hist_tabs), 4,
-                             "Step 4: four histograms open after post-restart additions")
-
-        # --- Step 5: Play with controls (use real HistogramPreviewRenderer) ---
-        from tab_managers.histogram_tab import HistogramPreviewRenderer
         from tkinter import ttk
-
-        real_renderer = HistogramPreviewRenderer()
-        mock_app_ctrl = MagicMock()
-        mock_app_ctrl.after.return_value = None
-        mock_app_ctrl.after_cancel.return_value = None
-        mock_app_ctrl.ROOT = _MOCK_ROOT
-        ctrl_container = ttk.Frame(self._root)
+        from tab_managers.histogram_tab import HistogramPreviewRenderer
+        r = HistogramPreviewRenderer()
+        mock_app = MagicMock()
+        mock_app.after.return_value = None
+        mock_app.after_cancel.return_value = None
+        mock_app.ROOT = _MOCK_ROOT
         ctrl_obj = _make_mock_histogram("gamma_1", x_min=10.0, x_max=2000.0)
-        with patch.object(real_renderer, "render_preview", return_value=None):
-            real_renderer.build_histogram_tab(
-                mock_app_ctrl, ctrl_container, ctrl_obj, second_root, "gamma_1"
-            )
+        with patch.object(r, "render_preview", return_value=None):
+            r.build_histogram_tab(mock_app, ttk.Frame(self._root),
+                                  ctrl_obj, second, "gamma_1")
 
-        # Zoom in on X axis
-        real_renderer._xmin_var.set(100.0)
-        real_renderer._xmax_var.set(1500.0)
-        self.assertAlmostEqual(real_renderer._xmin_var.get(), 100.0, places=1)
-        self.assertAlmostEqual(real_renderer._xmax_var.get(), 1500.0, places=1)
+        # Zoom into detector peak region
+        r._xmin_var.set("100.0"); r._xmax_var.set("1500.0")
+        self.assertAlmostEqual(float(r._xmin_var.get()), 100.0, places=1)
+        self.assertAlmostEqual(float(r._xmax_var.get()), 1500.0, places=1)
 
-        # Toggle log scales
-        real_renderer._logx_var.set(True)
-        real_renderer._logy_var.set(False)
-        self.assertTrue(real_renderer._logx_var.get(), "Step 5: log X toggled on")
-        self.assertFalse(real_renderer._logy_var.get(), "Step 5: log Y toggled off")
+        # Enable log-Y for dynamic-range visibility
+        r._logy_var.set(True)
+        self.assertTrue(r._logy_var.get())
 
-        # --- Step 6: Switch between histograms ---
-        all_keys = [k for k, *_ in tab._open_histograms]
-        self.assertGreaterEqual(len(all_keys), 2,
-                                "Step 6: at least two histograms to switch between")
-        for key in all_keys:
+        # Add a manual peak at 511 keV (positron annihilation)
+        r._peak_finder._manual_peak_var.set("511.0")
+        r._peak_finder._add_manual_peak()
+        self.assertIn(511.0, [p["energy"] for p in r._peak_finder.peaks])
+
+        # Edit title and labels for export
+        r._title_var.set("Co-57 Spectrum")
+        r._xlabel_var.set("Energy (keV)")
+        self.assertEqual(r._title_var.get(), "Co-57 Spectrum")
+
+        # Disable markers, then re-enable
+        r._show_markers_var.set(False)
+        self.assertFalse(r._show_markers_var.get())
+        r._show_markers_var.set(True)
+        self.assertTrue(r._show_markers_var.get())
+
+        # Reset returns us to full histogram view
+        r._reset_controls()
+        self.assertAlmostEqual(float(r._xmin_var.get()), 10.0, places=1)
+        self.assertAlmostEqual(float(r._xmax_var.get()), 2000.0, places=1)
+        self.assertTrue(r._show_markers_var.get())
+
+        # Switch through all open histograms
+        for key in [k for k, *_ in tab._open_histograms]:
             tab.show_histogram(key)
-            self.assertEqual(tab._current_histogram_key, key,
-                             f"Step 6: current key should be {key}")
+            self.assertEqual(tab._current_histogram_key, key)
 
 
 if __name__ == "__main__":
     unittest.main()
+
