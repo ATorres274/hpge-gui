@@ -47,6 +47,11 @@ class HistogramTab:
         self._open_histograms: list[tuple[str, str, str]] = []
         self._current_histogram_key: str | None = None
 
+    @property
+    def current_histogram_key(self) -> str | None:
+        """Return the key of the currently displayed histogram, or None."""
+        return self._current_histogram_key
+
     def open_histogram(self, obj, root_path: str, path: str) -> None:
         tab_key = f"{root_path}:{path}"
         hist_name = getattr(obj, 'GetName', lambda: 'hist')()
@@ -236,6 +241,12 @@ class HistogramTab:
             return
         
         try:
+            # Remember the index of the histogram being closed before removing it
+            closed_idx = next(
+                (i for i, (k, _, _) in enumerate(self._open_histograms) if k == tab_key),
+                -1,
+            )
+
             # Remove from tracking
             container, renderer, obj = self._hist_tabs[tab_key]
             # Unpack the container explicitly before removing from tracking so that
@@ -260,13 +271,21 @@ class HistogramTab:
             # Clear as current if it was
             if self._current_histogram_key == tab_key:
                 self._current_histogram_key = None
-                self.hide_all_histograms()
-            
-            # Notify app of remaining count via callback
+                if self._open_histograms:
+                    # Show the next histogram in sequence (or the previous one if the
+                    # closed histogram was the last entry in the list).
+                    next_idx = min(closed_idx, len(self._open_histograms) - 1)
+                    next_key = self._open_histograms[next_idx][0]
+                    self.show_histogram(next_key)
+                else:
+                    self.hide_all_histograms()
+
+            # Notify app of remaining count and updated list via callback
             remaining = len(self._hist_tabs)
+            remaining_list = [(k, n) for k, n, _ in self._open_histograms]
             if self._on_histogram_closed and callable(self._on_histogram_closed):
                 try:
-                    self._on_histogram_closed(remaining)
+                    self._on_histogram_closed(remaining, remaining_list)
                 except Exception:
                     pass
         except Exception:
