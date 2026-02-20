@@ -35,6 +35,42 @@ class PeakFinderModule:
         self.parent_app = None
         self.host_notebook = None
 
+        # Search parameters — set by the tab layer either via ``set_search_params``
+        # or by direct attribute assignment (e.g. ``pf.search_sigma = 5``).
+        self.search_sigma: float = 3.0
+        self.search_energy_min: float | None = None
+        self.search_energy_max: float | None = None
+        self.search_threshold_counts: float = 0.0
+
+    def set_search_params(
+        self,
+        sigma: float | None = None,
+        energy_min: float | None = None,
+        energy_max: float | None = None,
+        threshold_counts: float | None = None,
+        *,
+        clear_energy_min: bool = False,
+        clear_energy_max: bool = False,
+    ) -> None:
+        """Update automatic-search parameters.
+
+        Called by the tab layer when the user adjusts the search controls.
+        Only non-``None`` arguments are updated.  Pass ``clear_energy_min=True``
+        or ``clear_energy_max=True`` to explicitly remove the corresponding bound.
+        """
+        if sigma is not None:
+            self.search_sigma = float(sigma)
+        if clear_energy_min:
+            self.search_energy_min = None
+        elif energy_min is not None:
+            self.search_energy_min = float(energy_min)
+        if clear_energy_max:
+            self.search_energy_max = None
+        elif energy_max is not None:
+            self.search_energy_max = float(energy_max)
+        if threshold_counts is not None:
+            self.search_threshold_counts = float(threshold_counts)
+
     def setup(self, app: Any, peaks_widget: Any, manual_peak_var: Any) -> None:
         """Attach UI widgets (Treeview or fallback Text widget) and manual var.
 
@@ -60,7 +96,14 @@ class PeakFinderModule:
         if self.current_hist is None:
             return
 
-        found = self.automatic.find_peaks(app, self.current_hist) or []
+        found = self.automatic.find_peaks(
+            app,
+            self.current_hist,
+            sigma=self.search_sigma,
+            energy_min=self.search_energy_min,
+            energy_max=self.search_energy_max,
+            threshold_counts=self.search_threshold_counts,
+        ) or []
 
         # Preserve manual peaks added by the user; replace only automatic peaks
         manual_peaks = [p for p in self.peaks if p.get("source") == "manual"]

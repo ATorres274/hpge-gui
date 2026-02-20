@@ -48,6 +48,10 @@ class HistogramPreviewRenderer:
         except Exception:
             self._app = None
 
+        # Store root_path and path so the Save dialog can identify the histogram
+        self._root_path = root_path
+        self._hist_path = path
+
         main_frame = ttk.Frame(parent_container)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
@@ -225,6 +229,10 @@ class HistogramPreviewRenderer:
 
         self._reset_controls = _reset_controls
         ttk.Button(extras_frame, text="Reset", command=_reset_controls).pack(side=tk.LEFT)
+        ttk.Button(
+            extras_frame, text="Save",
+            command=lambda: self._open_save_dialog(),
+        ).pack(side=tk.LEFT, padx=(6, 0))
 
         # Auto-render on every keystroke / paste in any entry field
         def _on_any_change(*_):
@@ -403,6 +411,7 @@ class HistogramPreviewRenderer:
         self._peak_finder.setup(app, peaks_tree, None)
         self._peak_finder._render_callback = lambda: self._schedule_render()
 
+        # --- Manual peak entry row ---
         peak_controls = ttk.Frame(peak_panel)
         peak_controls.pack(fill=tk.X, pady=(2, 0))
 
@@ -436,10 +445,274 @@ class HistogramPreviewRenderer:
             command=lambda: (self._peak_finder._clear_peaks(), self._schedule_render()),
         ).pack(side=tk.LEFT, padx=(0, 2))
 
+        # --- Search options row ---
+        self._build_peak_search_options(peak_panel, app)
+
         try:
             app.after(200, lambda: self._peak_finder._find_peaks(app))
         except Exception:
             pass
+
+    def _build_peak_search_options(self, peak_panel: ttk.Frame, app) -> None:
+        """Build the peak-search refinement controls below the manual entry row.
+
+        Exposes sigma (TSpectrum resolution), energy range, and minimum-counts
+        threshold so the user can focus automatic search on a sub-range of the
+        spectrum (e.g. above the Compton edge, or at higher energies where
+        background is low).  Changes take effect on the next "Find Peaks" call.
+        """
+        # Separator + collapsible label
+        ttk.Separator(peak_panel, orient="horizontal").pack(fill=tk.X, pady=(4, 2))
+
+        search_opts = ttk.Frame(peak_panel)
+        search_opts.pack(fill=tk.X, pady=(0, 2))
+
+        # --- Row 0: Sigma ---
+        row0 = ttk.Frame(search_opts)
+        row0.pack(fill=tk.X, pady=(1, 1))
+        ttk.Label(row0, text="Sigma:").pack(side=tk.LEFT, padx=(0, 2))
+        self._sigma_var = tk.StringVar(value="3")
+        sigma_spin = ttk.Spinbox(
+            row0, textvariable=self._sigma_var,
+            from_=1, to=20, increment=1, width=4,
+        )
+        sigma_spin.pack(side=tk.LEFT, padx=(0, 8))
+
+        # Tooltip-style help
+        ttk.Label(row0, text="(TSpectrum σ)", foreground="gray").pack(side=tk.LEFT)
+
+        # --- Row 1: Energy range ---
+        row1 = ttk.Frame(search_opts)
+        row1.pack(fill=tk.X, pady=(1, 1))
+        ttk.Label(row1, text="E range:").pack(side=tk.LEFT, padx=(0, 2))
+        self._search_emin_var = tk.StringVar(value="")
+        ttk.Entry(row1, textvariable=self._search_emin_var, width=7).pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Label(row1, text="–").pack(side=tk.LEFT, padx=(0, 2))
+        self._search_emax_var = tk.StringVar(value="")
+        ttk.Entry(row1, textvariable=self._search_emax_var, width=7).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Label(row1, text="keV", foreground="gray").pack(side=tk.LEFT)
+
+        # --- Row 2: Minimum counts threshold ---
+        row2 = ttk.Frame(search_opts)
+        row2.pack(fill=tk.X, pady=(1, 2))
+        ttk.Label(row2, text="Min counts:").pack(side=tk.LEFT, padx=(0, 2))
+        self._search_threshold_var = tk.StringVar(value="0")
+        ttk.Entry(row2, textvariable=self._search_threshold_var, width=8).pack(side=tk.LEFT)
+
+        def _apply_search_params(*_args) -> None:
+            """Push current control values into ``PeakFinderModule``."""
+            try:
+                sigma = float(self._sigma_var.get())
+            except (ValueError, AttributeError):
+                sigma = 3.0
+            try:
+                raw_emin = self._search_emin_var.get().strip()
+                emin = float(raw_emin) if raw_emin else None
+            except (ValueError, AttributeError):
+                emin = None
+            try:
+                raw_emax = self._search_emax_var.get().strip()
+                emax = float(raw_emax) if raw_emax else None
+            except (ValueError, AttributeError):
+                emax = None
+            try:
+                threshold = float(self._search_threshold_var.get())
+            except (ValueError, AttributeError):
+                threshold = 0.0
+
+            pf = getattr(self, "_peak_finder", None)
+            if pf is not None:
+                pf.search_sigma = sigma
+                pf.search_energy_min = emin
+                pf.search_energy_max = emax
+                pf.search_threshold_counts = threshold
+
+        # Bind so params are applied whenever the user edits them (on Return/FocusOut)
+        for widget_var in (self._sigma_var, self._search_emin_var,
+                           self._search_emax_var, self._search_threshold_var):
+            widget_var.trace_add("write", lambda *_: _apply_search_params())
+
+    # ------------------------------------------------------------------
+    # Save dialog
+    # ------------------------------------------------------------------
+
+    def _open_save_dialog(self) -> None:
+        """Open the save dialog for the current histogram.
+
+        Builds a minimal ``tk.Toplevel`` that lets the user choose PNG/PDF
+        (high-resolution render) and CSV/JSON peak export.  All file I/O is
+        delegated to ``SaveManager``; this method only owns the UI.
+        """
+        import os
+        import tkinter as tk
+        from tkinter import filedialog, messagebox
+        from modules.save_manager import SaveManager
+
+        app = getattr(self, "_app", None)
+        obj = getattr(self, "_current_obj", None)
+        root_path = getattr(self, "_root_path", "")
+        root = None
+        try:
+            if app is not None:
+                root = getattr(app, "ROOT", None)
+        except Exception:
+            pass
+
+        hist_name = "histogram"
+        try:
+            hist_name = obj.GetName()
+        except Exception:
+            pass
+
+        # ---- Build dialog ----
+        dialog = tk.Toplevel(app)
+        dialog.title("Save Histogram")
+        dialog.resizable(False, False)
+        dialog.transient(app)
+        dialog.grab_set()
+
+        pad = {"padx": 8, "pady": 4}
+        frame = tk.Frame(dialog)
+        frame.pack(fill=tk.BOTH, expand=True, **pad)
+
+        # Output directory
+        tk.Label(frame, text="Output directory:").grid(row=0, column=0, sticky="e", **pad)
+        default_dir = os.path.join("outputs", os.path.splitext(os.path.basename(root_path))[0])
+        dir_var = tk.StringVar(value=default_dir)
+        dir_entry = tk.Entry(frame, textvariable=dir_var, width=32)
+        dir_entry.grid(row=0, column=1, sticky="ew", **pad)
+        def _browse():
+            d = filedialog.askdirectory(title="Select output directory")
+            if d:
+                dir_var.set(d)
+        tk.Button(frame, text="…", command=_browse).grid(row=0, column=2, **pad)
+
+        # Filename stem
+        tk.Label(frame, text="Filename:").grid(row=1, column=0, sticky="e", **pad)
+        name_var = tk.StringVar(value=hist_name)
+        tk.Entry(frame, textvariable=name_var, width=32).grid(row=1, column=1, sticky="ew", **pad)
+
+        # Resolution
+        tk.Label(frame, text="Width (px):").grid(row=2, column=0, sticky="e", **pad)
+        width_var = tk.StringVar(value="1920")
+        tk.Entry(frame, textvariable=width_var, width=8).grid(row=2, column=1, sticky="w", **pad)
+        tk.Label(frame, text="Height (px):").grid(row=3, column=0, sticky="e", **pad)
+        height_var = tk.StringVar(value="1080")
+        tk.Entry(frame, textvariable=height_var, width=8).grid(row=3, column=1, sticky="w", **pad)
+        # Quick-ratio buttons
+        ratio_frame = tk.Frame(frame)
+        ratio_frame.grid(row=3, column=2, **pad)
+        def _set_ratio(w_ratio, h_ratio):
+            try:
+                w = int(width_var.get())
+                height_var.set(str(int(w * h_ratio / w_ratio)))
+            except ValueError:
+                pass
+        tk.Button(ratio_frame, text="16:9", command=lambda: _set_ratio(16, 9)).pack(side=tk.LEFT, padx=2)
+        tk.Button(ratio_frame, text="4:3",  command=lambda: _set_ratio(4, 3)).pack(side=tk.LEFT, padx=2)
+        tk.Button(ratio_frame, text="1:1",  command=lambda: _set_ratio(1, 1)).pack(side=tk.LEFT, padx=2)
+
+        # Format checkboxes
+        tk.Label(frame, text="Formats:").grid(row=4, column=0, sticky="ne", **pad)
+        fmt_frame = tk.Frame(frame)
+        fmt_frame.grid(row=4, column=1, columnspan=2, sticky="w", **pad)
+        png_var  = tk.BooleanVar(value=True)
+        pdf_var  = tk.BooleanVar(value=True)
+        csv_var  = tk.BooleanVar(value=False)
+        json_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(fmt_frame, text="PNG (preview)",  variable=png_var).pack(anchor="w")
+        tk.Checkbutton(fmt_frame, text="PDF (preview)",  variable=pdf_var).pack(anchor="w")
+        tk.Checkbutton(fmt_frame, text="CSV (peaks)",    variable=csv_var).pack(anchor="w")
+        tk.Checkbutton(fmt_frame, text="JSON (peaks)",   variable=json_var).pack(anchor="w")
+
+        frame.columnconfigure(1, weight=1)
+
+        def _do_save():
+            directory = dir_var.get().strip()
+            name      = name_var.get().strip()
+            if not directory or not name:
+                messagebox.showerror("Save", "Directory and filename are required.", parent=dialog)
+                return
+            try:
+                width  = int(width_var.get())
+                height = int(height_var.get())
+            except ValueError:
+                messagebox.showerror("Save", "Width and height must be integers.", parent=dialog)
+                return
+            if width < 100 or height < 100:
+                messagebox.showerror("Save", "Width and height must be ≥ 100 px.", parent=dialog)
+                return
+            if not any((png_var.get(), pdf_var.get(), csv_var.get(), json_var.get())):
+                messagebox.showerror("Save", "Select at least one output format.", parent=dialog)
+                return
+
+            # Assemble current render options from axis controls
+            options = HistogramControlsModule.build_render_options(
+                width, height,
+                xmin_raw=getattr(self, "_xmin_var", None) and self._xmin_var.get() or "",
+                xmax_raw=getattr(self, "_xmax_var", None) and self._xmax_var.get() or "",
+                ymin_raw=getattr(self, "_ymin_var", None) and self._ymin_var.get() or "",
+                ymax_raw=getattr(self, "_ymax_var", None) and self._ymax_var.get() or "",
+                logx=bool(getattr(self, "_logx_var", None) and self._logx_var.get()),
+                logy=bool(getattr(self, "_logy_var", None) and self._logy_var.get()),
+                xtitle=getattr(self, "_xlabel_var", None) and self._xlabel_var.get() or "",
+                ytitle=getattr(self, "_ylabel_var", None) and self._ylabel_var.get() or "",
+                title=getattr(self, "_title_var", None) and self._title_var.get() or "",
+                show_markers=bool(getattr(self, "_show_markers_var", None) and self._show_markers_var.get()),
+                peak_energies=[p["energy"] for p in getattr(getattr(self, "_peak_finder", None), "peaks", [])],
+            )
+
+            save_mgr = SaveManager()
+            saved: list[str] = []
+            try:
+                os.makedirs(directory, exist_ok=True)
+                saved.extend(save_mgr.delegate_save(
+                    root=root, obj=obj,
+                    directory=directory, name=name,
+                    width=width, height=height,
+                    render_options=options,
+                    png=png_var.get(), pdf=pdf_var.get(),
+                ))
+            except Exception as exc:
+                messagebox.showerror("Save", f"Image export failed:\n{exc}", parent=dialog)
+                return
+
+            peaks = list(getattr(getattr(self, "_peak_finder", None), "peaks", []))
+            if csv_var.get():
+                if not peaks:
+                    messagebox.showwarning("Save", "No peaks to export as CSV.", parent=dialog)
+                else:
+                    try:
+                        csv_path = os.path.join(directory, f"{name}_peaks.csv")
+                        save_mgr.export_peaks_csv(peaks, name, csv_path)
+                        saved.append(csv_path)
+                    except Exception as exc:
+                        messagebox.showerror("Save", f"CSV export failed:\n{exc}", parent=dialog)
+                        return
+
+            if json_var.get():
+                if not peaks:
+                    messagebox.showwarning("Save", "No peaks to export as JSON.", parent=dialog)
+                else:
+                    try:
+                        json_path = os.path.join(directory, f"{name}_peaks.json")
+                        save_mgr.export_peaks_json(peaks, name, json_path)
+                        saved.append(json_path)
+                    except Exception as exc:
+                        messagebox.showerror("Save", f"JSON export failed:\n{exc}", parent=dialog)
+                        return
+
+            if saved:
+                messagebox.showinfo(
+                    "Save", "Saved:\n" + "\n".join(os.path.basename(p) for p in saved),
+                    parent=dialog,
+                )
+            dialog.destroy()
+
+        btn_frame = tk.Frame(frame)
+        btn_frame.grid(row=5, column=0, columnspan=3, pady=(8, 4))
+        tk.Button(btn_frame, text="Save", command=_do_save).pack(side=tk.LEFT, padx=4)
+        tk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=4)
 
     # ------------------------------------------------------------------
     # Rendering
