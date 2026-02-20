@@ -438,19 +438,20 @@ class RootBrowserApp(tk.Tk):
 
     def _on_histogram_closed(self, remaining_count: int) -> None:
         """Callback from histogram tab when a histogram is closed.
-        
-        App decides what to show next: another histogram or the browser.
+
+        If the histogram container is no longer visible (i.e. the currently
+        displayed histogram was the one that was just closed), return the user
+        to the browser.  If another histogram is still being displayed (a
+        background histogram was removed via the dropdown while a different one
+        was visible) we leave the view unchanged.
         """
         try:
-            if remaining_count > 0:
-                # Show first remaining histogram
-                if hasattr(self.histogram_tab, '_open_histograms') and self.histogram_tab._open_histograms:
-                    tab_key, _, _ = self.histogram_tab._open_histograms[0]
-                    self._histogram_combo.current(0)
-                    self._show_histogram(tab_key)
-            else:
-                # No histograms left, show browser
+            if not self._hist_container.winfo_ismapped():
+                # The visible histogram was closed (hide_all_histograms already
+                # unpacked _hist_container).  Always return to browser so the
+                # user explicitly chooses what to view next.
                 self._focus_browser()
+            # else: a different histogram is still on screen – do nothing.
         except Exception as e:
             self._error_dispatcher.emit(
                 ErrorLevel.WARNING,
