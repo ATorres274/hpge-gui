@@ -1,0 +1,27 @@
+# GitHub Copilot Coding Agent - Environment Setup Steps
+#
+# These steps run before the agent starts working on any task in this
+# repository.  They install the Python dependencies required to import the
+# project modules and to run the test suite.
+#
+# Reference: https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot
+
+steps:
+  # Install the system tkinter library required by the GUI modules.
+  - name: Install system dependencies
+    run: |
+      sudo apt-get update -qq
+      sudo apt-get install -y python3-tk xvfb
+
+  # Install Python package dependencies declared in setup.py / pyproject.toml.
+  - name: Install Python dependencies
+    run: |
+      pip install --upgrade pip
+      pip install pytest
+      pip install -e . 2>/dev/null || true
+
+  # Start a virtual framebuffer so that headless tkinter tests can run.
+  - name: Start virtual display
+    run: |
+      Xvfb :99 -screen 0 1024x768x24 &
+      echo "DISPLAY=:99" >> "$GITHUB_ENV"
