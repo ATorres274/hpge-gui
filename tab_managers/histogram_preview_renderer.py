@@ -10,6 +10,7 @@ This file lives in ``tab_managers/`` so it is allowed to import ``tkinter``.
 All *computation* (axis defaults, scroll arithmetic, range validation, options
 assembly) is delegated to ``HistogramControlsModule`` in ``modules/``.
 All *peak data* management is delegated to ``PeakFinderModule`` in ``modules/``.
+All *fitting* computation and state is delegated to ``FitModule`` in ``modules/``.
 This class owns only the UI layout and event-wiring glue.
 """
 
@@ -18,19 +19,33 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import simpledialog, ttk
 
+from modules.error_dispatcher import get_dispatcher, ErrorLevel
+from modules.fit_module import FitModule
 from modules.histogram_controls_module import HistogramControlsModule
 from modules.peak_manager import PeakFinderModule
+from features.fit_feature import FitFeature, FIT_FUNCTIONS
 
 
 class HistogramPreviewRenderer:
     """Renders individual histogram preview with interactive controls.
 
-    Handles rendering, axis controls, range adjustments, and log scale toggles
-    for a single histogram preview within the HistogramTab.
+    Handles rendering, axis controls, range adjustments, log scale toggles,
+    and the fitting panel for a single histogram preview within the HistogramTab.
     """
 
     def __init__(self) -> None:
         self._pending_after: dict = {"id": None}
+        self._dispatcher = get_dispatcher()
+
+        # Fit panel state — populated lazily in build_histogram_tab
+        self._fit_module: FitModule | None = None
+        self._fit_frames: dict[int, ttk.Frame] = {}
+        self._fit_ui_states: dict[int, dict] = {}
+        self._fit_dropdown_var: tk.StringVar | None = None
+        self._fit_dropdown: ttk.Combobox | None = None
+        self._fit_container: ttk.Frame | None = None
+        self._fit_preview_label: tk.Label | None = None
+        self._fit_result_text: tk.Text | None = None
 
     # ------------------------------------------------------------------
     # Top-level UI builder
@@ -68,11 +83,27 @@ class HistogramPreviewRenderer:
         middle_bar = ttk.Frame(controls_frame)
         middle_bar.pack(fill=tk.X, padx=4, pady=(0, 0))
 
-        # Preview label — fills all remaining vertical space
+        # Preview area — left: histogram, right: fit preview (same width)
         preview_frame = ttk.Frame(content_frame)
         preview_frame.pack(fill=tk.BOTH, expand=True)
-        preview_label = tk.Label(preview_frame, bg="white")
+
+        hist_area = ttk.Frame(preview_frame)
+        hist_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        preview_label = tk.Label(hist_area, bg="white")
         preview_label.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Separator(preview_frame, orient="vertical").pack(
+            side=tk.LEFT, fill=tk.Y, padx=1
+        )
+
+        fit_area = ttk.Frame(preview_frame)
+        fit_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        fit_result_text = tk.Text(fit_area, height=6, wrap=tk.WORD, state=tk.DISABLED)
+        fit_result_text.pack(fill=tk.X, padx=4, pady=(4, 0))
+        self._fit_result_text = fit_result_text
+        fit_preview_label = tk.Label(fit_area, text="No fit yet", bg="white", fg="gray")
+        fit_preview_label.pack(fill=tk.BOTH, expand=True)
+        self._fit_preview_label = fit_preview_label
 
         self._preview_label = preview_label
         self._current_obj = obj
@@ -89,13 +120,21 @@ class HistogramPreviewRenderer:
         except Exception:
             pass
 
-        # Build controls and peak panel
+        # Build controls, peak panel, and fit panel
         try:
             defaults = HistogramControlsModule.compute_defaults(obj)
             axis_controls = ttk.Frame(middle_bar)
             axis_controls.pack(side=tk.LEFT, anchor="nw", padx=2, pady=(0, 0))
             self._build_axis_controls(axis_controls, app, defaults)
             self._build_peak_panel(middle_bar, app, obj)
+        except Exception:
+            pass
+
+        try:
+            self._fit_module = FitModule()
+            self._fit_module.set_fit_completed_callback(self._on_fit_completed)
+            self._fit_module.set_histogram(obj)
+            self._build_fit_panel(middle_bar)
         except Exception:
             pass
 
@@ -529,6 +568,281 @@ class HistogramPreviewRenderer:
             widget_var.trace_add("write", lambda *_: _apply_search_params())
 
     # ------------------------------------------------------------------
+    # Fit panel
+    # ------------------------------------------------------------------
+
+    def _build_fit_panel(self, middle_bar: ttk.Frame) -> None:
+        """Build the compact fitting control panel in *middle_bar*."""
+        vsep = ttk.Separator(middle_bar, orient="vertical")
+        vsep.pack(side=tk.LEFT, fill=tk.Y, padx=(8, 8), pady=2)
+
+        fit_panel = ttk.Frame(middle_bar)
+        fit_panel.pack(side=tk.LEFT, anchor="nw", padx=(0, 4))
+
+        ttk.Label(
+            fit_panel, text="Fits", font=("TkDefaultFont", 9, "bold")
+        ).pack(anchor="w", pady=(0, 2))
+
+        # Dropdown + Add button
+        header = ttk.Frame(fit_panel)
+        header.pack(fill=tk.X, pady=(0, 2))
+        self._fit_dropdown_var = tk.StringVar(value="")
+        self._fit_dropdown = ttk.Combobox(
+            header,
+            textvariable=self._fit_dropdown_var,
+            values=[],
+            state="readonly",
+            width=20,
+        )
+        self._fit_dropdown.pack(side=tk.LEFT, padx=(0, 4))
+        self._fit_dropdown.bind(
+            "<<ComboboxSelected>>", lambda e: self._on_fit_dropdown_changed()
+        )
+        ttk.Button(header, text="+ Fit", command=self._fit_add).pack(side=tk.LEFT)
+
+        # Container that shows the active fit's compact controls
+        self._fit_container = ttk.Frame(fit_panel)
+        self._fit_container.pack(fill=tk.X, pady=(0, 2))
+
+    def _fit_add(
+        self,
+        energy: float | None = None,
+        width: float | None = None,
+        peak_idx: int | None = None,
+    ) -> None:
+        """Create a new fit entry and show its compact controls card."""
+        if self._fit_module is None:
+            return
+        fit_id = self._fit_module.add_fit(energy=energy, width=width, peak_idx=peak_idx)
+        fit_name = self._fit_module.get_fit_display_name(fit_id)
+
+        card = ttk.Frame(self._fit_container)
+        ui_state = self._fit_build_card(card, fit_id, energy=energy, width=width)
+        self._fit_frames[fit_id] = card
+        self._fit_ui_states[fit_id] = ui_state
+
+        vals = list(self._fit_dropdown.cget("values"))
+        vals.append(fit_name)
+        self._fit_dropdown.config(values=vals)
+        self._fit_dropdown.set(fit_name)
+        self._fit_show_frame(fit_id)
+
+    def _fit_build_card(
+        self,
+        card: ttk.Frame,
+        fit_id: int,
+        energy: float | None = None,
+        width: float | None = None,
+    ) -> dict:
+        """Build compact per-fit controls inside *card* and return ui_state."""
+        ui_state: dict = {
+            "fit_func_var":    tk.StringVar(value="gaus"),
+            "fit_options_var": tk.StringVar(value="SQ"),
+            "energy_var":      tk.StringVar(value=f"{energy:.2f}" if energy is not None else ""),
+            "width_var":       tk.StringVar(value=str(width) if width is not None else ""),
+            "param_entries":   [],
+            "param_fixed_vars": [],
+            "params_frame":    None,
+            "refit_pending":   {"id": None},
+        }
+
+        row0 = ttk.Frame(card)
+        row0.pack(fill=tk.X, pady=(0, 1))
+
+        ttk.Label(row0, text="Func:").pack(side=tk.LEFT, padx=(0, 2))
+        func_combo = ttk.Combobox(
+            row0, textvariable=ui_state["fit_func_var"],
+            values=FIT_FUNCTIONS, state="readonly", width=14,
+        )
+        func_combo.pack(side=tk.LEFT, padx=(0, 6))
+        func_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda e, us=ui_state: self._fit_on_func_changed(us),
+        )
+
+        ttk.Label(row0, text="E:").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(row0, textvariable=ui_state["energy_var"], width=7).pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+        ttk.Label(row0, text="W:").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(row0, textvariable=ui_state["width_var"], width=7).pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+        ttk.Label(row0, text="Opt:").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(row0, textvariable=ui_state["fit_options_var"], width=5).pack(
+            side=tk.LEFT, padx=(0, 6)
+        )
+        ttk.Button(
+            row0, text="Fit",
+            command=lambda fid=fit_id: self._fit_trigger(fid),
+        ).pack(side=tk.LEFT)
+
+        # Params row
+        params_frame = ttk.LabelFrame(card, text="Initial Parameters (gaus)")
+        params_frame.pack(fill=tk.X, pady=(2, 1))
+        ui_state["params_frame"] = params_frame
+        self._fit_rebuild_params(ui_state, FitFeature.get_param_labels("gaus"))
+
+        return ui_state
+
+    def _fit_rebuild_params(self, ui_state: dict, param_names: list[str]) -> None:
+        """Destroy and recreate parameter entry widgets in the params frame."""
+        frame = ui_state["params_frame"]
+        for w in frame.winfo_children():
+            w.destroy()
+        ui_state["param_entries"] = []
+        ui_state["param_fixed_vars"] = []
+        for i, name in enumerate(param_names):
+            ttk.Label(frame, text=f"{name}:").grid(
+                row=0, column=i * 3, sticky="e", padx=(4, 2)
+            )
+            var = tk.StringVar(value="")
+            ttk.Entry(frame, textvariable=var, width=8).grid(
+                row=0, column=i * 3 + 1, sticky="w", padx=(0, 2)
+            )
+            var.trace_add("write", lambda *_, us=ui_state: self._fit_schedule_refit(us))
+            fixed_var = tk.BooleanVar(value=False)
+            ttk.Checkbutton(frame, text="Fix", variable=fixed_var).grid(
+                row=0, column=i * 3 + 2, sticky="w", padx=(0, 8)
+            )
+            ui_state["param_entries"].append(var)
+            ui_state["param_fixed_vars"].append(fixed_var)
+
+    # ------------------------------------------------------------------
+    # Fit event handlers
+    # ------------------------------------------------------------------
+
+    def _on_fit_dropdown_changed(self) -> None:
+        if self._fit_module is None or self._fit_dropdown_var is None:
+            return
+        selected = self._fit_dropdown_var.get()
+        for fit_id, name in self._fit_module.list_fits():
+            if name == selected:
+                self._fit_show_frame(fit_id)
+                return
+
+    def _fit_show_frame(self, fit_id: int) -> None:
+        for frame in self._fit_frames.values():
+            frame.pack_forget()
+        if fit_id in self._fit_frames:
+            self._fit_frames[fit_id].pack(fill=tk.X)
+
+    def _fit_on_func_changed(self, ui_state: dict) -> None:
+        fit_func = ui_state["fit_func_var"].get()
+        new_labels = FitFeature.get_param_labels(fit_func)
+        if len(new_labels) != len(ui_state["param_entries"]):
+            self._fit_rebuild_params(ui_state, new_labels)
+        ui_state["params_frame"].configure(
+            text=f"Initial Parameters ({fit_func})"
+        )
+
+    def _fit_schedule_refit(self, ui_state: dict) -> None:
+        app = getattr(self, "_app", None)
+        if app is None:
+            return
+        if ui_state["refit_pending"]["id"] is not None:
+            try:
+                app.after_cancel(ui_state["refit_pending"]["id"])
+            except Exception:
+                pass
+        for fid, us in self._fit_ui_states.items():
+            if us is ui_state:
+                ui_state["refit_pending"]["id"] = app.after(
+                    600, lambda fid=fid: self._fit_trigger(fid)
+                )
+                return
+
+    def _fit_trigger(self, fit_id: int) -> None:
+        """Read UI vars, push to FitModule, execute the fit."""
+        if self._fit_module is None:
+            return
+        ui_state = self._fit_ui_states.get(fit_id)
+        if ui_state is None:
+            return
+
+        fit_func    = ui_state["fit_func_var"].get()
+        fit_options = ui_state["fit_options_var"].get().strip() or "SQ"
+
+        try:
+            e = ui_state["energy_var"].get().strip()
+            energy = float(e) if e else None
+        except ValueError:
+            energy = None
+
+        try:
+            w = ui_state["width_var"].get().strip()
+            width = float(w) if w else None
+        except ValueError:
+            width = None
+
+        params: list[float] = []
+        for v in ui_state["param_entries"]:
+            raw = v.get().strip()
+            if not raw:
+                continue
+            try:
+                params.append(float(raw))
+            except ValueError as exc:
+                self._dispatcher.emit(
+                    ErrorLevel.WARNING,
+                    f"Non-numeric param ignored: {raw!r}",
+                    context="HistogramPreviewRenderer._fit_trigger",
+                    exception=exc,
+                )
+
+        fixed_params = [v.get() for v in ui_state["param_fixed_vars"]]
+
+        self._fit_module.update_fit_params(
+            fit_id,
+            fit_func=fit_func,
+            energy=energy,
+            width=width,
+            params=params,
+            fixed_params=fixed_params,
+            fit_options=fit_options,
+        )
+
+        root = self._fit_module.get_root_module(getattr(self, "_app", None))
+        if root is None:
+            return
+        self._fit_module.perform_fit(fit_id, root)
+
+    def _on_fit_completed(self, fit_id: int, cached: dict) -> None:
+        """Called by FitModule after a fit: update results text + preview."""
+        state = self._fit_module.get_fit_state(fit_id) if self._fit_module else None
+        if state is not None:
+            text = FitFeature.format_fit_results(
+                state.get("fit_func", "gaus"),
+                state.get("fit_options", "SQ"),
+                cached,
+            )
+            if self._fit_result_text is not None:
+                try:
+                    self._fit_result_text.config(state=tk.NORMAL)
+                    self._fit_result_text.delete("1.0", tk.END)
+                    self._fit_result_text.insert(tk.END, text)
+                    self._fit_result_text.config(state=tk.DISABLED)
+                except Exception:
+                    pass
+
+        # Render the fitted histogram clone into the fit preview label.
+        pm = getattr(self, "_preview_manager", None)
+        fit_label = self._fit_preview_label
+        if pm is not None and fit_label is not None and self._fit_module is not None:
+            root = self._fit_module.get_root_module(getattr(self, "_app", None))
+            clone = self._fit_module.current_hist_clone
+            if root is not None and clone is not None:
+                try:
+                    pm.render_into_label_async(root, clone, fit_label, options={}, delay_ms=80)
+                except Exception as exc:
+                    self._dispatcher.emit(
+                        ErrorLevel.INFO,
+                        "Fit preview render failed",
+                        context="HistogramPreviewRenderer._on_fit_completed",
+                        exception=exc,
+                    )
+
+    # ------------------------------------------------------------------
     # Save dialog
     # ------------------------------------------------------------------
 
@@ -674,13 +988,20 @@ class HistogramPreviewRenderer:
                 return
 
             peaks = list(getattr(getattr(self, "_peak_finder", None), "peaks", []))
+            # Collect completed fit states for combined export
+            fit_states = (
+                self._fit_module.get_all_fit_states()
+                if self._fit_module is not None
+                else None
+            ) or None
+
             if csv_var.get():
                 if not peaks:
                     messagebox.showwarning("Save", "No peaks to export as CSV.", parent=dialog)
                 else:
                     try:
                         csv_path = os.path.join(directory, f"{name}_peaks.csv")
-                        save_mgr.export_peaks_csv(peaks, name, csv_path)
+                        save_mgr.export_peaks_csv(peaks, name, csv_path, fit_states=fit_states)
                         saved.append(csv_path)
                     except Exception as exc:
                         messagebox.showerror("Save", f"CSV export failed:\n{exc}", parent=dialog)
@@ -692,7 +1013,7 @@ class HistogramPreviewRenderer:
                 else:
                     try:
                         json_path = os.path.join(directory, f"{name}_peaks.json")
-                        save_mgr.export_peaks_json(peaks, name, json_path)
+                        save_mgr.export_peaks_json(peaks, name, json_path, fit_states=fit_states)
                         saved.append(json_path)
                     except Exception as exc:
                         messagebox.showerror("Save", f"JSON export failed:\n{exc}", parent=dialog)

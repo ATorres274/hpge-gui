@@ -258,6 +258,28 @@ class SaveManager:
         except Exception:
             return None
 
+    @staticmethod
+    def _fit_state_val(fit_state: dict, key: str, default=""):
+        """Extract a plain value from a fit state that may use tkinter StringVar.
+
+        Supports both the new ``FitModule`` plain-dict states (``"fit_func"``,
+        ``"energy"``, ``"width"`` as native Python values) and the legacy
+        tkinter-Var based states (``"fit_func_var"``, ``"energy_var"``,
+        ``"width_var"``).
+        """
+        # New FitModule plain-Python key
+        val = fit_state.get(key)
+        if val is not None:
+            return val
+        # Legacy tkinter-Var key (e.g. "fit_func_var" → .get())
+        var = fit_state.get(f"{key}_var")
+        if var is not None and hasattr(var, "get") and callable(var.get):
+            try:
+                return var.get()
+            except Exception:
+                pass
+        return default
+
     def export_fit_results_csv(
         self,
         fit_states: dict[int, dict],
@@ -289,14 +311,16 @@ class SaveManager:
                     "Centroid_keV",
                     "Area",
                 ])
+                _FWHM = 2.355
+                _SQRT2PI = 2.506628
                 for tab_id, fit_state in sorted(fit_states.items()):
                     cached = fit_state.get("cached_results")
                     if cached is None or "error" in cached:
                         continue
 
-                    fit_func = fit_state.get("fit_func_var", {}).get() if hasattr(fit_state.get("fit_func_var", {}), "get") else "unknown"
-                    energy = fit_state.get("energy_var", {}).get() if hasattr(fit_state.get("energy_var", {}), "get") else ""
-                    width = fit_state.get("width_var", {}).get() if hasattr(fit_state.get("width_var", {}), "get") else ""
+                    fit_func = self._fit_state_val(fit_state, "fit_func", "unknown")
+                    energy   = self._fit_state_val(fit_state, "energy", "")
+                    width    = self._fit_state_val(fit_state, "width", "")
 
                     chi2 = cached.get("chi2", "")
                     ndf = cached.get("ndf", "")
@@ -306,11 +330,12 @@ class SaveManager:
                     errors = cached.get("errors", [])
 
                     fwhm = centroid = area = ""
-                    if fit_func == "gaus" and len(parameters) >= 3:
+                    # Gaussian peak annotations for gaus and compound gaus models
+                    if (fit_func == "gaus" or fit_func.startswith("gaus+")) and len(parameters) >= 3:
                         constant, mean, sigma = parameters[0], parameters[1], parameters[2]
-                        fwhm = 2.355 * sigma
+                        fwhm = _FWHM * sigma
                         centroid = mean
-                        area = constant * sigma * 2.506628
+                        area = constant * sigma * _SQRT2PI
 
                     writer.writerow([
                         tab_id,
@@ -348,16 +373,18 @@ class SaveManager:
                 "export_timestamp": datetime.now().isoformat(),
                 "fits": [],
             }
+            _FWHM = 2.355
+            _SQRT2PI = 2.506628
             for tab_id, fit_state in sorted(fit_states.items()):
                 cached = fit_state.get("cached_results")
                 if cached is None:
                     continue
 
-                fit_func = fit_state.get("fit_func_var", {}).get() if hasattr(fit_state.get("fit_func_var", {}), "get") else "unknown"
-                energy = fit_state.get("energy_var", {}).get() if hasattr(fit_state.get("energy_var", {}), "get") else ""
-                width = fit_state.get("width_var", {}).get() if hasattr(fit_state.get("width_var", {}), "get") else ""
+                fit_func = self._fit_state_val(fit_state, "fit_func", "unknown")
+                energy   = self._fit_state_val(fit_state, "energy", "")
+                width    = self._fit_state_val(fit_state, "width", "")
 
-                fit_data = {
+                fit_data: dict = {
                     "fit_id": tab_id,
                     "fit_function": fit_func,
                     "energy_keV": float(energy) if energy else None,
@@ -383,12 +410,13 @@ class SaveManager:
                         ],
                     })
 
-                    if fit_func == "gaus" and len(parameters) >= 3:
+                    is_gaus = fit_func == "gaus" or fit_func.startswith("gaus+")
+                    if is_gaus and len(parameters) >= 3:
                         constant, mean, sigma = parameters[0], parameters[1], parameters[2]
                         fit_data["annotations"] = {
-                            "fwhm_keV": 2.355 * sigma,
+                            "fwhm_keV": _FWHM * sigma,
                             "centroid_keV": mean,
-                            "area": constant * sigma * 2.506628,
+                            "area": constant * sigma * _SQRT2PI,
                         }
                     elif fit_func == "landau" and len(parameters) >= 3:
                         fit_data["annotations"] = {
@@ -412,7 +440,19 @@ class SaveManager:
             return self.export_fit_results_json(fit_states_dict, histogram_name, filepath)
         return self.export_fit_results_csv(fit_states_dict, histogram_name, filepath)
 
-    def export_peaks_csv(self, peaks: list[dict], histogram_name: str = "histogram", filepath: str | None = None) -> str | None:
+    def export_peaks_csv(
+        self,
+        peaks: list[dict],
+        histogram_name: str = "histogram",
+        filepath: str | None = None,
+        fit_states: dict | None = None,
+    ) -> str | None:
+        """Export peaks (and optionally fit results) to a single CSV file.
+
+        When *fit_states* is supplied the fit results are appended as a
+        second section after the peak rows, so callers get one file with
+        all analysis results.
+        """
         if not peaks:
             return None
         if not filepath:
@@ -430,17 +470,65 @@ class SaveManager:
                         f"{peak['energy']:.2f}",
                         f"{peak['counts']:.1f}",
                     ])
+
+                if fit_states:
+                    # Append fit results as a clearly-labelled second section.
+                    writer.writerow([])
+                    writer.writerow(["Fit Results"])
+                    writer.writerow([
+                        "Fit_ID", "Fit_Function", "Energy_keV", "Width_keV",
+                        "Chi2", "NDF", "Reduced_Chi2", "Status",
+                        "FWHM_keV", "Centroid_keV", "Area",
+                    ])
+                    _FWHM = 2.355
+                    _SQRT2PI = 2.506628
+                    for fit_id, fs in sorted(fit_states.items()):
+                        cached = fs.get("cached_results")
+                        if cached is None or "error" in cached:
+                            continue
+                        fit_func = self._fit_state_val(fs, "fit_func", "unknown")
+                        energy   = self._fit_state_val(fs, "energy", "")
+                        width    = self._fit_state_val(fs, "width", "")
+                        chi2 = cached.get("chi2", "")
+                        ndf  = cached.get("ndf", "")
+                        reduced = chi2 / ndf if ndf and ndf > 0 else ""
+                        params = cached.get("parameters", [])
+                        fwhm = centroid = area = ""
+                        if (fit_func == "gaus" or fit_func.startswith("gaus+")) and len(params) >= 3:
+                            fwhm = _FWHM * params[2]
+                            centroid = params[1]
+                            area = params[0] * params[2] * _SQRT2PI
+                        writer.writerow([
+                            fit_id, fit_func, energy, width,
+                            f"{chi2:.6f}" if chi2 else "", ndf,
+                            f"{reduced:.6f}" if reduced else "",
+                            cached.get("status", ""),
+                            f"{fwhm:.3f}" if fwhm else "",
+                            f"{centroid:.3f}" if centroid else "",
+                            f"{area:.1f}" if area else "",
+                        ])
             return filepath
         except Exception:
             raise
 
-    def export_peaks_json(self, peaks: list[dict], histogram_name: str = "histogram", filepath: str | None = None) -> str | None:
-        """Export peak list to a JSON file.
+    def export_peaks_json(
+        self,
+        peaks: list[dict],
+        histogram_name: str = "histogram",
+        filepath: str | None = None,
+        fit_states: dict | None = None,
+    ) -> str | None:
+        """Export peak list (and optionally fit results) to a JSON file.
+
+        When *fit_states* is supplied a ``"fits"`` section is added to the
+        same JSON document so callers get one file with all analysis results.
 
         Args:
             peaks: List of peak dicts with ``energy``, ``counts``, ``source`` keys.
             histogram_name: Used as the top-level key in the output JSON.
             filepath: Destination file path (required).
+            fit_states: Optional dict of ``{fit_id: fit_state}`` from
+                ``FitModule._fit_states``; completed fits are appended.
 
         Returns:
             The filepath on success, ``None`` if peaks is empty.
@@ -455,6 +543,8 @@ class SaveManager:
                 os.makedirs(dir_path, exist_ok=True)
             import json
 
+            _FWHM = 2.355
+            _SQRT2PI = 2.506628
             export: dict = {
                 "histogram": histogram_name,
                 "peaks": [
@@ -467,6 +557,53 @@ class SaveManager:
                     for i, p in enumerate(peaks, 1)
                 ],
             }
+            if fit_states:
+                fits_section = []
+                for fit_id, fs in sorted(fit_states.items()):
+                    cached = fs.get("cached_results")
+                    if cached is None or "error" in cached:
+                        continue
+                    fit_func = self._fit_state_val(fs, "fit_func", "unknown")
+                    params   = cached.get("parameters", [])
+                    errors   = cached.get("errors", [])
+                    chi2     = cached.get("chi2", 0)
+                    ndf      = cached.get("ndf", 0)
+                    entry: dict = {
+                        "fit_id":       fit_id,
+                        "fit_function": fit_func,
+                        "energy_keV":   self._fit_state_val(fs, "energy", None),
+                        "width_keV":    self._fit_state_val(fs, "width", None),
+                        "chi2":         chi2,
+                        "ndf":          ndf,
+                        "reduced_chi2": chi2 / ndf if ndf > 0 else None,
+                        "status":       cached.get("status", 0),
+                        "parameters":   [
+                            {"index": i, "value": p, "error": errors[i] if i < len(errors) else 0}
+                            for i, p in enumerate(params)
+                        ],
+                    }
+                    is_gaus = fit_func == "gaus" or fit_func.startswith("gaus+")
+                    if is_gaus and len(params) >= 3:
+                        entry["annotations"] = {
+                            "fwhm_keV":     _FWHM * params[2],
+                            "centroid_keV": params[1],
+                            "area":         params[0] * params[2] * _SQRT2PI,
+                        }
+                    elif fit_func in ("2gaus", "2gaus+pol1") and len(params) >= 6:
+                        entry["annotations"] = {
+                            "peak1": {
+                                "fwhm_keV":     _FWHM * params[2],
+                                "centroid_keV": params[1],
+                                "area":         params[0] * params[2] * _SQRT2PI,
+                            },
+                            "peak2": {
+                                "fwhm_keV":     _FWHM * params[5],
+                                "centroid_keV": params[4],
+                                "area":         params[3] * params[5] * _SQRT2PI,
+                            },
+                        }
+                    fits_section.append(entry)
+                export["fits"] = fits_section
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(export, f, indent=2)
             return filepath
