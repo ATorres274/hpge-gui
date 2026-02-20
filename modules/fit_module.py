@@ -1,9 +1,9 @@
 """Fit module: domain logic for ROOT histogram fitting.
 
 No UI code lives in this module.  The owning tab manager
-(``tab_managers.fit_preview_renderer.FitPreviewRenderer``) handles all UI
-construction and event wiring, calling into this module for computation and
-state management.
+(``tab_managers.histogram_preview_renderer.HistogramPreviewRenderer``) handles
+all UI construction and event wiring, calling into this module for computation
+and state management.
 
 Callbacks injected at construction time::
 
@@ -26,7 +26,7 @@ class FitModule:
     """Domain module for ROOT histogram fitting.
 
     Stores plain-Python fit state (no tkinter objects).  The tab layer
-    ``FitPreviewRenderer`` owns all widget creation and calls this module
+    ``HistogramPreviewRenderer`` owns all widget creation and calls this module
     to perform computation and fire callbacks.
     """
 
