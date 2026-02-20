@@ -1,0 +1,369 @@
+"""Pure fitting computation feature.
+
+Provides static helpers for histogram fitting via ROOT TF1.  No UI code and
+no persistent state live here — the owning module (``modules.fit_module``)
+delegates all ROOT computation and result formatting to this feature.
+"""
+
+from __future__ import annotations
+
+import os
+from contextlib import redirect_stdout, redirect_stderr
+
+from features.feature import Feature
+
+
+# Gaussian constants used in parameter estimation and result formatting.
+_FWHM_TO_SIGMA: float = 2.355      # 2 * sqrt(2 * ln 2)  — converts FWHM to σ
+_SQRT_2PI: float = 2.506628        # sqrt(2π)             — Gaussian normalisation
+
+
+class FitFeature(Feature):
+    """Pure-computation feature for ROOT histogram fitting.
+
+    All methods are static; the class is purely a namespace for fit-related
+    pure functions so that ``FitModule`` can delegate computation without
+    mixing ROOT operations into its UI code.
+    """
+
+    name = "Fit"
+
+    # Parameter label strings shown in the controls row of each fit card.
+    _PARAM_LABELS: dict[str, list[str]] = {
+        "gaus":   ["Constant (p0)", "Mean (p1)", "Sigma (p2)"],
+        "landau": ["Constant (p0)", "Mean (p1)", "Width (p2)"],
+        "expo":   ["Constant (p0)", "Slope (p1)"],
+        "pol1":   ["a0 (p0)", "a1 (p1)"],
+        "pol2":   ["a0 (p0)", "a1 (p1)", "a2 (p2)"],
+        "pol3":   ["a0 (p0)", "a1 (p1)", "a2 (p2)", "a3 (p3)"],
+    }
+
+    # Short parameter names used when displaying fit results.
+    _PARAM_DISPLAY: dict[str, list[str]] = {
+        "gaus":   ["Constant", "Mean", "Sigma"],
+        "landau": ["Constant", "Mean", "Width"],
+        "expo":   ["Constant", "Slope"],
+        "pol1":   ["a0", "a1"],
+        "pol2":   ["a0", "a1", "a2"],
+        "pol3":   ["a0", "a1", "a2", "a3"],
+    }
+
+    @staticmethod
+    def get_param_labels(fit_func: str) -> list[str]:
+        """Return UI parameter label strings for *fit_func*."""
+        return list(FitFeature._PARAM_LABELS.get(fit_func, []))
+
+    @staticmethod
+    def get_param_display_names(fit_func: str) -> list[str]:
+        """Return short parameter names used in the results panel."""
+        return list(FitFeature._PARAM_DISPLAY.get(fit_func, []))
+
+    @staticmethod
+    def get_fit_range(
+        energy: float | None,
+        width: float | None,
+    ) -> tuple[float | None, float | None]:
+        """Convert peak (energy, width) to a (xmin, xmax) fit window.
+
+        Returns ``(None, None)`` when either value is missing or non-numeric.
+        """
+        try:
+            if energy is None or width is None:
+                return (None, None)
+            e = float(energy)
+            w = float(width)
+            return (e - w / 2.0, e + w / 2.0)
+        except (TypeError, ValueError):
+            return (None, None)
+
+    @staticmethod
+    def default_fit_params(
+        fit_func: str,
+        hist,
+        energy: float | None,
+        width: float | None,
+        xmin: float,
+        xmax: float,
+    ) -> list[float]:
+        """Return sensible initial parameter guesses for *fit_func*.
+
+        Uses the histogram's mean and bin content near *energy* to seed
+        amplitude and mean estimates.  *width* is converted to sigma for
+        Gaussian fits.
+
+        Args:
+            fit_func: One of gaus, landau, expo, pol1, pol2, pol3.
+            hist: ROOT TH1 histogram (used to estimate mean and peak height).
+            energy: Peak location hint in keV (``None`` → use histogram mean).
+            width: Peak width hint in keV (``None`` → auto-estimate).
+            xmin: Left edge of fit range.
+            xmax: Right edge of fit range.
+
+        Returns:
+            List of ``float`` initial parameter values.
+        """
+        try:
+            hist_mean = (
+                float(hist.GetMean())
+                if hist and hasattr(hist, "GetMean")
+                else (xmin + xmax) / 2.0
+            )
+        except Exception:
+            hist_mean = (xmin + xmax) / 2.0
+
+        peak_x = energy if energy is not None else hist_mean
+
+        try:
+            peak_bin = hist.FindBin(peak_x) if hist and hasattr(hist, "FindBin") else None
+            peak_height = (
+                float(hist.GetBinContent(peak_bin)) if peak_bin is not None else 1.0
+            )
+        except Exception:
+            peak_height = 1.0
+
+        if width is None or width <= 0:
+            width = max((xmax - xmin) / 5.0, 1.0)
+        sigma = max(float(width) / _FWHM_TO_SIGMA, 1e-6)
+
+        if fit_func == "gaus":
+            return [peak_height, peak_x, sigma]
+        if fit_func == "landau":
+            return [peak_height, peak_x, float(width)]
+        if fit_func == "expo":
+            return [0.0, -0.001]
+        if fit_func == "pol1":
+            return [peak_height, 0.0]
+        if fit_func == "pol2":
+            return [peak_height, 0.0, 0.0]
+        if fit_func == "pol3":
+            return [peak_height, 0.0, 0.0, 0.0]
+        return []
+
+    @staticmethod
+    def clone_histogram(hist, name_suffix: str = "_fit_clone"):
+        """Return a ROOT clone of *hist* for non-destructive fitting.
+
+        Falls back to *hist* itself when cloning raises an exception.
+        Returns ``None`` when *hist* is ``None``.
+        """
+        if hist is None:
+            return None
+        try:
+            clone_name = (
+                f"{hist.GetName()}{name_suffix}"
+                if hasattr(hist, "GetName")
+                else f"hist{name_suffix}"
+            )
+            return hist.Clone(clone_name)
+        except Exception:
+            return hist
+
+    @staticmethod
+    def perform_fit(
+        root,
+        hist_clone,
+        fit_func: str,
+        fit_id: int,
+        fit_epoch: int,
+        xmin: float,
+        xmax: float,
+        params: list[float],
+        fixed_params: list[bool],
+        fit_option: str,
+        prev_func_obj=None,
+    ) -> tuple[dict, object]:
+        """Fit *hist_clone* using a ROOT TF1 function.
+
+        All ROOT terminal output is suppressed.  The previous fit function
+        object is removed from the histogram's function list before the new
+        fit is performed so that multiple fits coexist cleanly on the same
+        clone.
+
+        Args:
+            root: ROOT Python module.
+            hist_clone: ROOT TH1 histogram to fit (should be a clone).
+            fit_func: Function name accepted by TF1 (gaus, expo, …).
+            fit_id: Unique identifier for this fit (used in TF1 naming).
+            fit_epoch: Incrementing counter that guarantees unique TF1 names.
+            xmin: Left edge of the fit window.
+            xmax: Right edge of the fit window.
+            params: Initial parameter guesses (empty → auto-generate via
+                ``default_fit_params``).
+            fixed_params: Bool flags parallel to *params*; ``True`` = fix that
+                parameter during minimisation.
+            fit_option: ROOT Fit option string; ``"S"`` is appended if absent.
+            prev_func_obj: TF1 from a prior fit on this clone to remove first
+                (may be ``None``).
+
+        Returns:
+            ``(cached_results_dict, new_tf1_object)`` where
+            *cached_results_dict* is the output of ``_extract_results``.
+        """
+        if "S" not in fit_option:
+            fit_option = fit_option + "S"
+
+        prev_batch = root.gROOT.IsBatch()
+        root.gROOT.SetBatch(True)
+        try:
+            with open(os.devnull, "w") as devnull:
+                with redirect_stdout(devnull), redirect_stderr(devnull):
+                    # Remove previous fit function from clone's function list.
+                    fit_list = hist_clone.GetListOfFunctions()
+                    if fit_list is not None and prev_func_obj is not None:
+                        try:
+                            fit_list.Remove(prev_func_obj)
+                        except Exception:
+                            pass
+                        try:
+                            root.gROOT.RecursiveRemove(prev_func_obj)
+                        except Exception:
+                            pass
+
+                    fit_name = f"fit_{fit_func}_{fit_id}_{fit_epoch}"
+                    fit_obj = root.TF1(fit_name, fit_func, xmin, xmax)
+
+                    if not params:
+                        params = FitFeature.default_fit_params(
+                            fit_func, hist_clone, None, None, xmin, xmax
+                        )
+
+                    for i, p in enumerate(params):
+                        fit_obj.SetParameter(i, p)
+                    for i, is_fixed in enumerate(fixed_params):
+                        if is_fixed and i < len(params):
+                            fit_obj.FixParameter(i, params[i])
+
+                    fit_result = hist_clone.Fit(fit_obj, fit_option, "", xmin, xmax)
+
+            cached = FitFeature._extract_results(fit_result, fit_obj)
+            return cached, fit_obj
+        finally:
+            root.gROOT.SetBatch(prev_batch)
+
+    @staticmethod
+    def _extract_results(fit_result, func_obj) -> dict:
+        """Extract fit results into a plain Python dict (no ROOT objects).
+
+        Tries the TF1 function object first (most reliable across ROOT
+        versions), then falls back to the TFitResultPtr.
+
+        Returns a dict with keys ``chi2``, ``ndf``, ``status``,
+        ``parameters``, ``errors`` on success, or ``{"error": <msg>}``
+        on failure.
+        """
+        if func_obj is not None:
+            try:
+                npar = int(func_obj.GetNpar()) if hasattr(func_obj, "GetNpar") else 0
+                params = [float(func_obj.GetParameter(i)) for i in range(npar)]
+                errors = [float(func_obj.GetParError(i)) for i in range(npar)]
+                chi2 = (
+                    float(func_obj.GetChisquare())
+                    if hasattr(func_obj, "GetChisquare")
+                    else 0.0
+                )
+                ndf = int(func_obj.GetNDF()) if hasattr(func_obj, "GetNDF") else 0
+                return {
+                    "chi2": chi2,
+                    "ndf": ndf,
+                    "status": 0,
+                    "parameters": params,
+                    "errors": errors,
+                }
+            except Exception:
+                pass
+
+        if fit_result is None:
+            return {"error": "Fit result is None"}
+
+        try:
+            result = (
+                fit_result.Get() if hasattr(fit_result, "Get") else fit_result
+            )
+            if result is None:
+                return {"error": "Fit result pointer is null"}
+            status = int(result.Status())
+            if status != 0:
+                return {
+                    "error": (
+                        f"Fit failed with status {status}. "
+                        "Try adjusting energy range or initial parameters."
+                    ),
+                }
+            num_params = (
+                len(result.Parameters()) if hasattr(result, "Parameters") else 0
+            )
+            return {
+                "chi2": float(result.Chi2()),
+                "ndf": int(result.Ndf()),
+                "status": status,
+                "parameters": list(result.Parameters()) if num_params > 0 else [],
+                "errors": [float(result.ParError(i)) for i in range(num_params)],
+            }
+        except Exception as exc:
+            return {"error": f"Failed to extract fit results: {exc}"}
+
+    @staticmethod
+    def format_fit_results(fit_func: str, fit_option: str, cached: dict) -> str:
+        """Format *cached* fit results as a human-readable multi-line string.
+
+        Args:
+            fit_func: Fit function name (gaus, expo, …).
+            fit_option: Fit option string used (for display only).
+            cached: Dict produced by ``_extract_results`` / ``perform_fit``.
+
+        Returns:
+            Multi-line string suitable for a read-only Text widget.
+        """
+        if "error" in cached:
+            return cached["error"]
+
+        chi2 = cached.get("chi2", 0.0)
+        ndf = cached.get("ndf", 0)
+        status = cached.get("status", -1)
+        parameters = cached.get("parameters", [])
+        errors = cached.get("errors", [])
+
+        lines = [
+            f"Fit Function: {fit_func}",
+            f"Fit Options: {fit_option}",
+            f"Chi-square: {chi2:.6f}",
+            f"NDF: {ndf}",
+            f"Reduced Chi-square: {chi2 / ndf if ndf > 0 else 'N/A'}",
+            f"Status: {status}",
+            "",
+            "Parameters:",
+        ]
+
+        names = FitFeature.get_param_display_names(fit_func)
+        for i, param in enumerate(parameters):
+            error = errors[i] if i < len(errors) else 0.0
+            name = names[i] if i < len(names) else f"p[{i}]"
+            lines.append(f"  {name} = {param:.6f} ± {error:.6f}")
+
+        if fit_func == "gaus" and len(parameters) >= 3:
+            mean = parameters[1]
+            sigma = parameters[2]
+            fwhm = 2.355 * sigma
+            constant = parameters[0]
+            area = constant * sigma * _SQRT_2PI
+            lines += [
+                "",
+                "Peak Annotations:",
+                f"  FWHM: {fwhm:.3f} keV",
+                f"  Centroid: {mean:.3f} keV",
+                f"  Area: {area:.1f}",
+            ]
+        elif fit_func == "landau" and len(parameters) >= 3:
+            mean = parameters[1]
+            width = parameters[2]
+            lines += [
+                "",
+                "Peak Annotations:",
+                f"  Most Probable Value: {mean:.3f} keV",
+                f"  Width: {width:.3f} keV",
+            ]
+
+        return "\n".join(lines)
+
+
+__all__ = ["FitFeature"]

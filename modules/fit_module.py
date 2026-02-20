@@ -1,31 +1,46 @@
-"""Fitting feature module usable by multiple tabs.
+"""Fitting module: UI orchestration for ROOT histogram fitting.
 
-This mirrors the previous `FittingFeature` implementation from
-`tab_managers/fitting_tab.py` but does not depend on the `Tab` base class
-so it can be reused by other parts of the application.
+Delegates all pure computation (parameter estimation, ROOT TF1 fitting,
+result extraction and formatting) to ``features.fit_feature.FitFeature``.
+The module itself only owns UI construction and state management.
+
+Callbacks injected at construction time::
+
+    on_save(fit_state: dict) -> None
+        Called when the user requests to save a fit result.  The owning tab
+        should implement saving / exporting from *fit_state*.
+
+    on_preview_render(hist_clone, options: dict, image_label) -> None
+        Called after a successful fit to request a preview render of the
+        fitted histogram clone.  The owning tab provides the renderer.
 """
 
 from __future__ import annotations
 
-import os
-from datetime import datetime
 import tkinter as tk
-from contextlib import redirect_stdout, redirect_stderr
-from tkinter import ttk, messagebox
+from tkinter import ttk
 
 from .error_dispatcher import get_dispatcher, ErrorLevel
+from features.fit_feature import FitFeature
 
 
 class FittingFeature:
     name = "Fitting"
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        on_save=None,
+        on_preview_render=None,
+    ) -> None:
         self.fit_frame: ttk.Frame | None = None
         self.current_hist = None
         self.current_hist_clone = None  # Clone for fitting without affecting original
         # Module does not own preview/export/save managers; UI/tab handles those
         self._app = None
         self._dispatcher = get_dispatcher()
+        # Callbacks provided by the owning tab
+        self._on_save = on_save
+        self._on_preview_render = on_preview_render
         self.detected_peaks: list[dict] = []
         self.peak_tabs: dict[int, dict] = {}
         self.current_peak_index: int | None = None
@@ -41,17 +56,8 @@ class FittingFeature:
         """Clean up resources."""
         try:
             pass
-        except Exception as e:
-            try:
-                self._dispatcher.emit(
-                    ErrorLevel.INFO,
-                    "Error during FittingFeature cleanup",
-                    context="FittingFeature.__del__",
-                    exception=e
-                )
-            except Exception:
-                # Suppress exceptions during cleanup to prevent issues during interpreter shutdown
-                pass
+        except Exception:
+            pass
 
     def build_ui(self, app, parent: ttk.Frame) -> None:
         self._app = app
@@ -102,17 +108,13 @@ class FittingFeature:
         self.current_hist = obj
         # Create a clone for fitting to avoid modifying the original
         if obj is not None:
-            try:
-                clone_name = f"{obj.GetName()}_fit_clone" if hasattr(obj, "GetName") else "hist_fit_clone"
-                self.current_hist_clone = obj.Clone(clone_name)
-            except Exception as e:
+            self.current_hist_clone = FitFeature.clone_histogram(obj)
+            if self.current_hist_clone is obj:
                 self._dispatcher.emit(
                     ErrorLevel.INFO,
                     "Failed to clone histogram for fitting, using original",
                     context="FittingFeature.on_selection",
-                    exception=e
                 )
-                self.current_hist_clone = obj
         else:
             self.current_hist_clone = None
         # Update title with histogram name
@@ -325,11 +327,11 @@ class FittingFeature:
             row=0, column=8, padx=12
         )
 
-        # Parameters frame
+        # Parameters frame — initial labels come from FitFeature
         fit_state["params_frame"] = ttk.LabelFrame(main_container, text="Initial Parameters (Gaussian)")
         fit_state["params_frame"].pack(fill=tk.X, pady=4)
 
-        param_names = ["Constant (p0)", "Mean (p1)", "Sigma (p2)"]
+        param_names = FitFeature.get_param_labels("gaus")
         for i, name in enumerate(param_names):
             ttk.Label(fit_state["params_frame"], text=f"{name}:").grid(row=0, column=i*3, sticky="e", padx=(4, 2))
             var = tk.StringVar(value="")
@@ -368,7 +370,13 @@ class FittingFeature:
         button_frame = ttk.Frame(fit_state["right_frame"])
         button_frame.pack(fill=tk.X, side=tk.BOTTOM, padx=4, pady=4)
 
-        # Per-fit Save UI is handled by the tab; feature exposes fit_states for export.
+        # Save button — delegates to on_save callback provided by the owning tab.
+        if self._on_save is not None:
+            ttk.Button(
+                button_frame,
+                text="Save Fit",
+                command=lambda fs=fit_state: self._invoke_save(fs),
+            ).pack(side=tk.LEFT, padx=(0, 4))
 
         # Store fit state in frame for future reference (bidirectional)
         tab_frame.fit_state = fit_state
@@ -413,16 +421,7 @@ class FittingFeature:
     def _on_fit_func_changed_for_tab(self, fit_state: dict) -> None:
         """Update parameter labels when fit function changes for a specific tab."""
         fit_func = fit_state["fit_func_var"].get()
-        param_names_map = {
-            "gaus": ["Constant (p0)", "Mean (p1)", "Sigma (p2)"],
-            "landau": ["Constant (p0)", "Mean (p1)", "Width (p2)"],
-            "expo": ["Constant (p0)", "Slope (p1)"],
-            "pol1": ["a0 (p0)", "a1 (p1)"],
-            "pol2": ["a0 (p0)", "a1 (p1)", "a2 (p2)"],
-            "pol3": ["a0 (p0)", "a1 (p1)", "a2 (p2)", "a3 (p3)"],
-        }
-
-        expected_params = param_names_map.get(fit_func, [])
+        expected_params = FitFeature.get_param_labels(fit_func)
         current_param_count = len(fit_state["param_entries"])
 
         if len(expected_params) != current_param_count:
@@ -480,87 +479,43 @@ class FittingFeature:
             return False
 
     def _default_fit_params(self, fit_func: str, fit_state: dict, xmin: float, xmax: float) -> list[float]:
-        """Build default fit parameters from the tab inputs and histogram stats."""
+        """Delegate to FitFeature.default_fit_params using current fit-state vars."""
         try:
-            energy = float(fit_state["energy_var"].get().strip())
-        except Exception as e:
-            self._dispatcher.emit(
-                ErrorLevel.INFO,
-                "Failed to parse energy from fit state",
-                context="FittingFeature._default_fit_params",
-                exception=e
-            )
+            energy_str = fit_state["energy_var"].get().strip()
+            energy = float(energy_str) if energy_str else None
+        except Exception:
             energy = None
 
         try:
-            width = float(fit_state["width_var"].get().strip())
-        except Exception as e:
-            self._dispatcher.emit(
-                ErrorLevel.INFO,
-                "Failed to parse width from fit state",
-                context="FittingFeature._default_fit_params",
-                exception=e
-            )
+            width_str = fit_state["width_var"].get().strip()
+            width = float(width_str) if width_str else None
+        except Exception:
             width = None
 
-        hist = self.current_hist_clone
-        hist_mean = float(hist.GetMean()) if hist and hasattr(hist, "GetMean") else (xmin + xmax) / 2
-        peak_x = energy if energy is not None else hist_mean
-
-        try:
-            peak_bin = hist.FindBin(peak_x) if hist and hasattr(hist, "FindBin") else None
-            peak_height = float(hist.GetBinContent(peak_bin)) if peak_bin is not None else 1.0
-        except Exception as e:
-            self._dispatcher.emit(
-                ErrorLevel.INFO,
-                "Failed to calculate peak height from histogram",
-                context="FittingFeature._default_fit_params",
-                exception=e
-            )
-            peak_height = 1.0
-
-        if width is None or width <= 0:
-            width = max((xmax - xmin) / 5, 1.0)
-
-        sigma = max(width / 2.355, 1e-6)
-
-        if fit_func == "gaus":
-            return [peak_height, peak_x, sigma]
-        if fit_func == "landau":
-            return [peak_height, peak_x, width]
-        if fit_func == "expo":
-            return [0.0, -0.001]
-        if fit_func == "pol1":
-            return [peak_height, 0.0]
-        if fit_func == "pol2":
-            return [peak_height, 0.0, 0.0]
-        if fit_func == "pol3":
-            return [peak_height, 0.0, 0.0, 0.0]
-        return []
+        return FitFeature.default_fit_params(
+            fit_func, self.current_hist_clone, energy, width, xmin, xmax
+        )
 
     def _perform_fit_for_tab(self, app, fit_state: dict) -> None:
-        """Perform fit for a specific tab."""
-        # Ensure we have a histogram (original or clone)
+        """Perform fit for a specific tab, delegating ROOT computation to FitFeature."""
         if self.current_hist is None:
-            messagebox.showwarning("No histogram", "Please select a histogram first")
+            self._dispatcher.emit(
+                ErrorLevel.WARNING,
+                "No histogram selected for fitting",
+                context="FittingFeature._perform_fit_for_tab",
+            )
             return
-        
-        # Create clone if it doesn't exist
+
+        # Ensure clone exists
         if self.current_hist_clone is None:
-            try:
-                clone_name = f"{self.current_hist.GetName()}_fit_clone" if hasattr(self.current_hist, "GetName") else "hist_fit_clone"
-                self.current_hist_clone = self.current_hist.Clone(clone_name)
-            except Exception as e:
-                self._dispatcher.emit(
-                    ErrorLevel.INFO,
-                    "Failed to clone histogram for fit performance, using original",
-                    context="FittingFeature._perform_fit_for_tab",
-                    exception=e
-                )
-                self.current_hist_clone = self.current_hist
+            self.current_hist_clone = FitFeature.clone_histogram(self.current_hist)
 
         if fit_state is None:
-            messagebox.showwarning("Error", "Invalid fit state")
+            self._dispatcher.emit(
+                ErrorLevel.WARNING,
+                "Invalid fit state",
+                context="FittingFeature._perform_fit_for_tab",
+            )
             return
 
         try:
@@ -568,370 +523,153 @@ class FittingFeature:
             if root is None:
                 return
 
-            # Always restart fit state from scratch
+            # Reset fit state for a fresh run
             fit_state["cached_results"] = None
             fit_state["has_fit"] = False
             fit_state["fit_result"] = None
             fit_state["fit_func_obj"] = None
             fit_state["fit_epoch"] += 1
 
-            prev_batch = root.gROOT.IsBatch()
-            root.gROOT.SetBatch(True)
+            fit_func = fit_state["fit_func_var"].get()
+            fit_range = self._get_fit_range_for_tab(fit_state)
 
-            try:
-                fit_func = fit_state["fit_func_var"].get()
-                fit_range = self._get_fit_range_for_tab(fit_state)
+            xaxis = (
+                self.current_hist_clone.GetXaxis()
+                if hasattr(self.current_hist_clone, "GetXaxis")
+                else None
+            )
+            default_xmin = float(xaxis.GetXmin()) if xaxis else 0
+            default_xmax = float(xaxis.GetXmax()) if xaxis else 10000
+            xmin = fit_range[0] if fit_range[0] is not None else default_xmin
+            xmax = fit_range[1] if fit_range[1] is not None else default_xmax
 
-                params = [float(v.get()) if v.get().strip() else None for v in fit_state["param_entries"]]
-                params = [p for p in params if p is not None]
+            params = []
+            for v in fit_state["param_entries"]:
+                raw = v.get().strip()
+                if not raw:
+                    continue
+                try:
+                    params.append(float(raw))
+                except ValueError as exc:
+                    self._dispatcher.emit(
+                        ErrorLevel.WARNING,
+                        f"Non-numeric initial parameter value ignored: {raw!r}",
+                        context="FittingFeature._perform_fit_for_tab",
+                        exception=exc,
+                    )
+            fixed_params = [v.get() for v in fit_state["param_fixed_vars"]]
 
-                fixed_params = [fixed_var.get() for fixed_var in fit_state["param_fixed_vars"]]
+            if not params:
+                params = self._default_fit_params(fit_func, fit_state, xmin, xmax)
 
-                fit_option = fit_state["fit_options_var"].get().strip()
-                if not fit_option:
-                    fit_option = "SQ"  # Default: S=return TFitResult, Q=quiet
-                
-                if "S" not in fit_option:
-                    fit_option += "S"
+            fit_option = fit_state["fit_options_var"].get().strip() or "SQ"
 
-                with open(os.devnull, "w") as devnull:
-                    with redirect_stdout(devnull), redirect_stderr(devnull):
-                        # Remove only this tab's previous fit function (do not clear others)
-                        fit_list = self.current_hist_clone.GetListOfFunctions()
-                        prev_func = fit_state.get("fit_func_obj")
-                        if fit_list and prev_func:
-                            try:
-                                fit_list.Remove(prev_func)
-                            except Exception as e:
-                                self._dispatcher.emit(
-                                    ErrorLevel.INFO,
-                                    "Failed to remove previous fit function from histogram",
-                                    context="FittingFeature._perform_fit_for_tab",
-                                    exception=e
-                                )
-                            try:
-                                root.gROOT.RecursiveRemove(prev_func)
-                            except Exception as e:
-                                self._dispatcher.emit(
-                                    ErrorLevel.INFO,
-                                    "Failed to recursively remove previous fit function",
-                                    context="FittingFeature._perform_fit_for_tab",
-                                    exception=e
-                                )
+            cached, fit_obj = FitFeature.perform_fit(
+                root,
+                self.current_hist_clone,
+                fit_func,
+                fit_state["fit_id"],
+                fit_state["fit_epoch"],
+                xmin,
+                xmax,
+                params,
+                fixed_params,
+                fit_option,
+                prev_func_obj=fit_state.get("fit_func_obj"),
+            )
 
-                        xaxis = self.current_hist_clone.GetXaxis() if hasattr(self.current_hist_clone, "GetXaxis") else None
-                        default_xmin = xaxis.GetXmin() if xaxis else 0
-                        default_xmax = xaxis.GetXmax() if xaxis else 10000
-                        xmin = fit_range[0] if fit_range[0] is not None else default_xmin
-                        xmax = fit_range[1] if fit_range[1] is not None else default_xmax
+            fit_state["cached_results"] = cached
+            fit_state["fit_func_obj"] = fit_obj
+            fit_state["has_fit"] = "error" not in cached
 
-                        fit_name = f"fit_{fit_func}_{fit_state['fit_id']}_{fit_state['fit_epoch']}"
-                        fit_obj = root.TF1(fit_name, fit_func, xmin, xmax)
-
-                        if not params:
-                            params = self._default_fit_params(fit_func, fit_state, xmin, xmax)
-
-                        if params:
-                            for i, p in enumerate(params):
-                                fit_obj.SetParameter(i, p)
-
-                            for i, is_fixed in enumerate(fixed_params):
-                                if is_fixed and i < len(params):
-                                    fit_obj.FixParameter(i, params[i])
-
-                        fit_state["fit_result"] = self.current_hist_clone.Fit(fit_obj, fit_option, "", xmin, xmax)
-                        fit_state["fit_func_obj"] = fit_obj
-
-                        # Retry once if TFitResultPtr is empty despite S option
-                        try:
-                            if hasattr(fit_state["fit_result"], "Get") and fit_state["fit_result"].Get() is None:
-                                retry_option = fit_option
-                                if "S" not in retry_option:
-                                    retry_option += "S"
-                                fit_state["fit_epoch"] += 1
-                                retry_name = f"fit_{fit_func}_{fit_state['fit_id']}_{fit_state['fit_epoch']}"
-                                retry_obj = root.TF1(retry_name, fit_func, xmin, xmax)
-                                if not params:
-                                    params = self._default_fit_params(fit_func, fit_state, xmin, xmax)
-
-                                if params:
-                                    for i, p in enumerate(params):
-                                        retry_obj.SetParameter(i, p)
-                                    for i, is_fixed in enumerate(fixed_params):
-                                        if is_fixed and i < len(params):
-                                            retry_obj.FixParameter(i, params[i])
-                                fit_state["fit_result"] = self.current_hist_clone.Fit(retry_obj, retry_option, "", xmin, xmax)
-                                fit_state["fit_func_obj"] = retry_obj
-                        except Exception as e:
-                            self._dispatcher.emit(
-                                ErrorLevel.INFO,
-                                "Failed to retry fit after initial failure",
-                                context="FittingFeature._perform_fit_for_tab",
-                                exception=e
-                            )
-
-                # Cache fit results immediately before they become invalid (this persists)
-                self._cache_fit_results(fit_state)
-
-                # Mark fit as successful only when cached results are valid
-                cached = fit_state.get("cached_results")
-                if cached and "error" not in cached:
-                    fit_state["has_fit"] = True
-
-                # Clear fit_result after caching since ROOT object will become invalid
-                fit_state["fit_result"] = None
-
-                self._render_fit_preview_for_tab(root, fit_state)
-                self._display_fit_results_for_tab(fit_state)
-            finally:
-                root.gROOT.SetBatch(prev_batch)
+            self._render_fit_preview_for_tab(fit_state)
+            self._display_fit_results_for_tab(fit_state)
 
         except Exception as e:
             import traceback
             error_msg = f"Fit failed: {e}\n{traceback.format_exc()}"
             self._show_results_for_tab(fit_state, error_msg)
 
-    def _cache_fit_results(self, fit_state: dict) -> None:
-        """Extract and cache fit results before they become invalid."""
-        if fit_state["fit_result"] is None:
-            fit_state["cached_results"] = {"error": "Fit result is None"}
-            return
-
-        def _normalize_result(result):
-            if hasattr(result, "Get"):
-                try:
-                    resolved = result.Get()
-                    if resolved:
-                        return resolved
-                except Exception as e:
-                    self._dispatcher.emit(
-                        ErrorLevel.INFO,
-                        "Failed to resolve TFitResultPtr",
-                        context="FittingFeature._cache_fit_results._normalize_result",
-                        exception=e
-                    )
-            return result
-
-        def _cache_from_func(func_obj) -> bool:
-            if func_obj is None:
-                return False
-            try:
-                npar = int(func_obj.GetNpar()) if hasattr(func_obj, "GetNpar") else 0
-                params = [float(func_obj.GetParameter(i)) for i in range(npar)] if npar > 0 else []
-                errors = [float(func_obj.GetParError(i)) for i in range(npar)] if npar > 0 else []
-                chi2 = float(func_obj.GetChisquare()) if hasattr(func_obj, "GetChisquare") else 0.0
-                ndf = int(func_obj.GetNDF()) if hasattr(func_obj, "GetNDF") else 0
-                fit_state["cached_results"] = {
-                    "chi2": chi2,
-                    "ndf": ndf,
-                    "status": 0,
-                    "parameters": params,
-                    "errors": errors,
-                }
-                return True
-            except Exception as e:
-                self._dispatcher.emit(
-                    ErrorLevel.INFO,
-                    "Failed to cache results from TF1 function object",
-                    context="FittingFeature._cache_fit_results._cache_from_func",
-                    exception=e
-                )
-                return False
-
-        try:
-            if _cache_from_func(fit_state.get("fit_func_obj")):
-                return
-
-            result = _normalize_result(fit_state["fit_result"])
-
-            # Try to get status - if this fails, try TF1 fallback
-            try:
-                status = int(result.Status())
-            except Exception as e:
-                if isinstance(result, (int, float)):
-                    status = int(result)
-                    fit_state["cached_results"] = {
-                        "error": f"Fit failed with status {status}. Try adjusting energy range or initial parameters.",
-                    }
-                    return
-                if _cache_from_func(fit_state.get("fit_func_obj")):
-                    return
-                self._dispatcher.emit(
-                    ErrorLevel.INFO,
-                    "Failed to get fit status from result object",
-                    context="FittingFeature._cache_fit_results",
-                    exception=e
-                )
-                fit_state["cached_results"] = {"error": f"Fit result invalid: {str(e)}"}
-                return
-
-            # Status 0 means successful fit, other values indicate failure
-            if status != 0:
-                fit_state["cached_results"] = {
-                    "error": f"Fit failed with status {status}. Try adjusting energy range or initial parameters.",
-                }
-                return
-
-            # Cache all results as native Python types
-            try:
-                num_params = len(result.Parameters()) if hasattr(result, "Parameters") else 0
-            except Exception as e:
-                self._dispatcher.emit(
-                    ErrorLevel.INFO,
-                    "Failed to get parameter count from fit result",
-                    context="FittingFeature._cache_fit_results",
-                    exception=e
-                )
-                num_params = 0
-
-            fit_state["cached_results"] = {
-                "chi2": float(result.Chi2()),
-                "ndf": int(result.Ndf()),
-                "status": status,
-                "parameters": list(result.Parameters()) if num_params > 0 else [],
-                "errors": [float(result.ParError(i)) for i in range(num_params)] if num_params > 0 else [],
-            }
-        except Exception as e:
-            if _cache_from_func(fit_state.get("fit_func_obj")):
-                return
-            self._dispatcher.emit(
-                ErrorLevel.WARNING,
-                "Failed to cache fit results",
-                context="FittingFeature._cache_fit_results",
-                exception=e
-            )
-            fit_state["cached_results"] = {
-                "error": f"Failed to cache results: {str(e)}",
-            }
-
     def _get_fit_range_for_tab(self, fit_state: dict) -> tuple[float | None, float | None]:
-        """Get fit range for a specific tab."""
+        """Extract (xmin, xmax) from fit-state energy/width vars via FitFeature."""
         try:
             energy_str = fit_state["energy_var"].get().strip()
             width_str = fit_state["width_var"].get().strip()
-
-            if not energy_str or not width_str:
-                return (None, None)
-
-            energy = float(energy_str)
-            width = float(width_str)
-
-            xmin = energy - width / 2
-            xmax = energy + width / 2
-
-            return (xmin, xmax)
+            energy = float(energy_str) if energy_str else None
+            width = float(width_str) if width_str else None
+            return FitFeature.get_fit_range(energy, width)
         except ValueError as e:
             self._dispatcher.emit(
                 ErrorLevel.INFO,
                 "Invalid fit range values provided",
                 context="FittingFeature._get_fit_range_for_tab",
-                exception=e
+                exception=e,
             )
-            messagebox.showerror("Invalid range", "Energy and Width must be numeric")
             return (None, None)
 
-    def _render_fit_preview_for_tab(self, root, fit_state: dict) -> None:
-        """Render fit preview placeholder for a specific tab.
+    def _render_fit_preview_for_tab(self, fit_state: dict) -> None:
+        """Invoke the on_preview_render callback or show a placeholder.
 
-        Actual preview rendering should be performed by the owning tab using the
-        tab's HistogramRenderer. The feature simply ensures the left pane has a
-        placeholder so the UI remains consistent.
+        The owning tab provides a renderer via the ``on_preview_render``
+        callback injected at construction time.  When no callback is
+        registered the left pane shows a text placeholder instead.
         """
-        if self.current_hist_clone is None:
-            return
-
-        try:
-            for widget in fit_state["left_frame"].winfo_children():
-                widget.destroy()
-
-            fit_state["image_label"] = ttk.Label(
-                fit_state["left_frame"], text="Preview available in tab", foreground="gray"
-            )
-            fit_state["image_label"].pack(fill=tk.BOTH, expand=True)
-        except Exception as e:
-            self._show_results_for_tab(fit_state, f"Render preview error: {e}")
+        if self._on_preview_render is not None and callable(self._on_preview_render):
+            try:
+                self._on_preview_render(
+                    self.current_hist_clone,
+                    {},
+                    fit_state.get("image_label"),
+                )
+            except Exception as e:
+                self._dispatcher.emit(
+                    ErrorLevel.INFO,
+                    "Preview render callback failed",
+                    context="FittingFeature._render_fit_preview_for_tab",
+                    exception=e,
+                )
+        else:
+            # Fallback: show a text placeholder when no renderer is connected.
+            try:
+                for widget in fit_state["left_frame"].winfo_children():
+                    widget.destroy()
+                fit_state["image_label"] = ttk.Label(
+                    fit_state["left_frame"],
+                    text="Fit preview available when tab is connected",
+                    foreground="gray",
+                )
+                fit_state["image_label"].pack(fill=tk.BOTH, expand=True)
+            except Exception as e:
+                self._dispatcher.emit(
+                    ErrorLevel.INFO,
+                    "Failed to update preview placeholder",
+                    context="FittingFeature._render_fit_preview_for_tab",
+                    exception=e,
+                )
 
     def _display_fit_results_for_tab(self, fit_state: dict) -> None:
-        """Display fit results for a specific tab."""
+        """Format and display fit results using FitFeature.format_fit_results."""
         if fit_state.get("cached_results") is None:
             return
+        text = FitFeature.format_fit_results(
+            fit_state["fit_func_var"].get(),
+            fit_state["fit_options_var"].get(),
+            fit_state["cached_results"],
+        )
+        self._show_results_for_tab(fit_state, text)
 
-        cached = fit_state["cached_results"]
-
-        # Check if there was an error
-        if "error" in cached:
-            self._show_results_for_tab(fit_state, cached["error"])
-            return
-
-        chi2 = cached["chi2"]
-        ndf = cached["ndf"]
-        status = cached["status"]
-        parameters = cached["parameters"]
-        errors = cached["errors"]
-
-        result_lines = [
-            f"Fit Function: {fit_state['fit_func_var'].get()}",
-            f"Fit Options: {fit_state['fit_options_var'].get()}",
-            f"Chi-square: {chi2:.6f}",
-            f"NDF: {ndf}",
-            f"Reduced Chi-square: {chi2 / ndf if ndf > 0 else 'N/A'}",
-            f"Status: {status}",
-            "",
-            "Parameters:",
-        ]
-
-        try:
-            param_names_display = {
-                "gaus": ["Constant", "Mean", "Sigma"],
-                "landau": ["Constant", "Mean", "Width"],
-                "expo": ["Constant", "Slope"],
-                "pol1": ["a0", "a1"],
-                "pol2": ["a0", "a1", "a2"],
-                "pol3": ["a0", "a1", "a2", "a3"],
-            }
-            names = param_names_display.get(fit_state['fit_func_var'].get(), [])
-
-            for i, param in enumerate(parameters):
-                error = errors[i] if i < len(errors) else 0
-                name = names[i] if i < len(names) else f"p[{i}]"
-                result_lines.append(f"  {name} = {param:.6f} ± {error:.6f}")
-
-            if fit_state['fit_func_var'].get() == "gaus" and len(parameters) >= 3:
-                mean = parameters[1]
-                sigma = parameters[2]
-                fwhm = 2.355 * sigma
-
-                constant = parameters[0]
-                area = constant * sigma * (2.506628)
-
-                result_lines.extend([
-                    "",
-                    "Peak Annotations:",
-                    f"  FWHM: {fwhm:.3f} keV",
-                    f"  Centroid: {mean:.3f} keV",
-                    f"  Area: {area:.1f}",
-                ])
-
-            elif fit_state['fit_func_var'].get() == "landau" and len(parameters) >= 3:
-                mean = parameters[1]
-                width = parameters[2]
-
-                result_lines.extend([
-                    "",
-                    "Peak Annotations:",
-                    f"  Most Probable Value: {mean:.3f} keV",
-                    f"  Width: {width:.3f} keV",
-                ])
-
-        except Exception as e:
-            self._dispatcher.emit(
-                ErrorLevel.INFO,
-                "Failed to format fit result parameters for display",
-                context="FittingFeature._display_fit_results_for_tab",
-                exception=e
-            )
-
-        self._show_results_for_tab(fit_state, "\n".join(result_lines))
+    def _invoke_save(self, fit_state: dict) -> None:
+        """Invoke the on_save callback with the current fit state."""
+        if self._on_save is not None and callable(self._on_save):
+            try:
+                self._on_save(fit_state)
+            except Exception as e:
+                self._dispatcher.emit(
+                    ErrorLevel.WARNING,
+                    "Save callback raised an exception",
+                    context="FittingFeature._invoke_save",
+                    exception=e,
+                )
 
     def _show_results_for_tab(self, fit_state: dict, text: str) -> None:
         """Show results in a specific tab."""
