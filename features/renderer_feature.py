@@ -64,12 +64,12 @@ class RootRenderer:
                                 for obj_to_remove in to_remove:
                                     func_list.Remove(obj_to_remove)
 
-                        if options.get("clear_functions", False):
-                            if hasattr(render_obj, "GetListOfFunctions"):
-                                fit_list = render_obj.GetListOfFunctions()
-                                while fit_list.GetSize() > 1:
-                                    func = fit_list.At(0)
-                                    fit_list.Remove(func)
+                        # When a specific TF1 is provided, suppress auto-drawing
+                        # of any functions that ROOT attached to the clone (from
+                        # prior fits on the shared histogram) by using the
+                        # "HIST" draw option.  The caller's specific TF1 is then
+                        # drawn explicitly with "same" below.
+                        fit_func_obj = options.get("fit_func_obj")
 
                         try:
                             canvas.SetDPI(150)
@@ -78,37 +78,57 @@ class RootRenderer:
 
                         self._apply_options(root, canvas, render_obj, options)
 
-                        render_obj.Draw()
+                        # "HIST" suppresses auto-drawn attached functions so
+                        # only our explicitly-provided TF1 appears.
+                        render_obj.Draw("HIST" if fit_func_obj is not None else "")
+
+                        # Draw the per-fit TF1 curve after the histogram.
+                        if fit_func_obj is not None:
+                            try:
+                                fit_func_obj.Draw("same")
+                            except Exception:
+                                pass
 
                         try:
-                            markers = options.get("markers")
                             show_markers = options.get("show_markers", True)
-                            if markers and show_markers and hasattr(render_obj, "FindBin"):
-                                xs = array("d", [float(m) for m in markers])
-                                ys = array("d", [])
-                                for val in xs:
-                                    try:
-                                        bin_idx = render_obj.FindBin(val)
-                                        ys.append(float(render_obj.GetBinContent(bin_idx)))
-                                    except Exception:
-                                        ys.append(0.0)
-                                try:
-                                    poly = root.TPolyMarker(len(xs), xs, ys)
-                                    try:
-                                        poly.SetMarkerStyle(29)
-                                        poly.SetMarkerSize(3)
+                            if show_markers and hasattr(render_obj, "FindBin"):
+                                def _draw_markers(marker_list, style, size, color):
+                                    if not marker_list:
+                                        return
+                                    xs = array("d", [float(m) for m in marker_list])
+                                    ys = array("d", [])
+                                    for val in xs:
                                         try:
-                                            poly.SetMarkerColor(2)
+                                            bin_idx = render_obj.FindBin(val)
+                                            ys.append(float(render_obj.GetBinContent(bin_idx)))
+                                        except Exception:
+                                            ys.append(0.0)
+                                    try:
+                                        poly = root.TPolyMarker(len(xs), xs, ys)
+                                        try:
+                                            poly.SetMarkerStyle(style)
+                                            poly.SetMarkerSize(size)
+                                            try:
+                                                poly.SetMarkerColor(color)
+                                            except Exception:
+                                                pass
+                                        except Exception:
+                                            pass
+                                        try:
+                                            poly.Draw("P same")
                                         except Exception:
                                             pass
                                     except Exception:
                                         pass
-                                    try:
-                                        poly.Draw("P same")
-                                    except Exception:
-                                        pass
-                                except Exception:
-                                    pass
+
+                                # Automatic peaks: red five-pointed star (style 29)
+                                _draw_markers(
+                                    options.get("markers"), style=29, size=3, color=2
+                                )
+                                # Manual peaks: blue open circle (style 24)
+                                _draw_markers(
+                                    options.get("manual_markers"), style=24, size=2, color=4
+                                )
                                 try:
                                     canvas.Modified()
                                     canvas.Update()
@@ -116,6 +136,30 @@ class RootRenderer:
                                     pass
                         except Exception:
                             pass
+
+                        # Optional TPaveText overlay (fit results on the canvas).
+                        # Placed in the top-right corner to avoid the peak data.
+                        pavetext = options.get("pavetext")
+                        if pavetext:
+                            try:
+                                pave = root.TPaveText(0.52, 0.60, 0.97, 0.97, "NDC")
+                                pave.SetFillColor(0)
+                                pave.SetFillStyle(1001)
+                                pave.SetFillColorAlpha(0, 0.75)  # semi-transparent
+                                pave.SetBorderSize(1)
+                                pave.SetTextAlign(12)
+                                pave.SetTextFont(42)
+                                pave.SetTextSize(0.042)
+                                for line in str(pavetext).split("\n"):
+                                    pave.AddText(line if line.strip() else " ")
+                                pave.Draw()
+                                try:
+                                    canvas.Modified()
+                                    canvas.Update()
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
 
                         canvas.Print(filepath)
                         if render_obj is not obj:
@@ -165,6 +209,16 @@ class RootRenderer:
             pass
 
     def _apply_options(self, root, canvas, obj, options: dict) -> None:
+        # Suppress the ROOT stats box globally for this render.
+        try:
+            root.gStyle.SetOptStat(0)
+        except Exception:
+            pass
+        try:
+            obj.SetStats(0)
+        except Exception:
+            pass
+
         # Apply default tight margins so exported images don't have
         # excessive white space around axis labels and titles.
         # Users can override these via options keys if needed.
@@ -249,6 +303,35 @@ class RootRenderer:
         xrange = options.get("xrange")
         if xrange and xrange[0] is not None and xrange[1] is not None:
             xaxis.SetRangeUser(xrange[0], xrange[1])
+
+            # Auto-fit Y range to the visible window so the peak fills the
+            # preview vertically.  Only done when xrange is explicitly set
+            # (i.e. a zoomed fit preview) and no explicit yrange was supplied.
+            if yaxis and not options.get("yrange"):
+                try:
+                    b1 = obj.FindBin(float(xrange[0]))
+                    b2 = obj.FindBin(float(xrange[1]))
+                    y_max = 0.0
+                    y_min = float("inf")
+                    for b in range(max(1, b1), b2 + 1):
+                        val = float(obj.GetBinContent(b))
+                        if val > y_max:
+                            y_max = val
+                        if val > 0 and val < y_min:
+                            y_min = val
+                    if y_max > 0:
+                        logy = options.get("logy", False)
+                        if logy:
+                            # In log scale keep a one-decade margin below and
+                            # 30 % headroom above so axis labels don't clip.
+                            lo = max(y_min * 0.5, 0.5)
+                            hi = y_max * 1.5
+                        else:
+                            lo = 0.0
+                            hi = y_max * 1.15
+                        yaxis.SetRangeUser(lo, hi)
+                except Exception:
+                    pass
 
         if yaxis:
             yrange = options.get("yrange")

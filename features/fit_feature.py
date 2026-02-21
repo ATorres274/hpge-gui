@@ -121,6 +121,25 @@ class FitFeature(Feature):
             return (None, None)
 
     @staticmethod
+    def peak_sigma_mean(
+        fit_func: str,
+        params: list[float],
+    ) -> tuple[float | None, float | None]:
+        """Return ``(mean, sigma)`` for the primary Gaussian component.
+
+        For all supported ``gaus``-based models the first three parameters
+        are ``[amplitude, mean, sigma]``.  Returns ``(None, None)`` for
+        non-Gaussian models or if the parameter list is too short.
+        """
+        if fit_func.startswith("gaus") or fit_func.startswith("2gaus"):
+            if len(params) >= 3:
+                try:
+                    return float(params[1]), abs(float(params[2]))
+                except (TypeError, ValueError):
+                    pass
+        return None, None
+
+    @staticmethod
     def default_fit_params(
         fit_func: str,
         hist,
@@ -131,43 +150,76 @@ class FitFeature(Feature):
     ) -> list[float]:
         """Return sensible initial parameter guesses for *fit_func*.
 
-        Uses the histogram's mean and bin content near *energy* to seed
-        amplitude and mean estimates.  *width* is converted to sigma for
-        Gaussian fits.
+        Scans ``[xmin, xmax]`` for the actual maximum bin to seed amplitude
+        and centroid.  Estimates sigma from the half-maximum crossing points
+        rather than a fixed fraction of the window width.
 
         Args:
             fit_func: One of gaus, gaus+pol1, gaus+pol2, gaus+erf.
             hist: ROOT TH1 histogram (used to estimate mean and peak height).
-            energy: Peak location hint in keV (``None`` → use histogram mean).
-            width: Peak width hint in keV (``None`` → auto-estimate).
+            energy: Peak location hint in keV (``None`` → use max-bin centre).
+            width: Peak width hint in keV (``None`` → auto-estimate from FWHM).
             xmin: Left edge of fit range.
             xmax: Right edge of fit range.
 
         Returns:
             List of ``float`` initial parameter values.
         """
-        try:
-            hist_mean = (
-                float(hist.GetMean())
-                if hist and hasattr(hist, "GetMean")
-                else (xmin + xmax) / 2.0
-            )
-        except Exception:
-            hist_mean = (xmin + xmax) / 2.0
+        # --- locate the peak bin within [xmin, xmax] -----------------------
+        peak_height = 1.0
+        peak_x = energy if energy is not None else (xmin + xmax) / 2.0
 
-        peak_x = energy if energy is not None else hist_mean
+        if hist is not None and hasattr(hist, "FindBin"):
+            try:
+                b_lo = hist.FindBin(xmin)
+                b_hi = hist.FindBin(xmax)
+                if b_hi >= b_lo:
+                    max_content = -1.0
+                    max_bin = b_lo
+                    for b in range(b_lo, b_hi + 1):
+                        c = float(hist.GetBinContent(b))
+                        if c > max_content:
+                            max_content = c
+                            max_bin = b
+                    peak_height = max(max_content, 1.0)
+                    # Prefer energy hint for mean; fall back to max-bin centre.
+                    if energy is None:
+                        peak_x = float(hist.GetBinCenter(max_bin))
+            except Exception:
+                pass
 
-        try:
-            peak_bin = hist.FindBin(peak_x) if hist and hasattr(hist, "FindBin") else None
-            peak_height = (
-                float(hist.GetBinContent(peak_bin)) if peak_bin is not None else 1.0
-            )
-        except Exception:
-            peak_height = 1.0
-
-        if width is None or width <= 0:
-            width = max((xmax - xmin) / 5.0, 1.0)
-        sigma = max(float(width) / _FWHM_TO_SIGMA, 1e-6)
+        # --- estimate sigma from FWHM or explicit width --------------------
+        if width is not None and width > 0:
+            sigma = float(width) / _FWHM_TO_SIGMA
+        else:
+            # Walk outward from peak_x to find half-maximum crossing.
+            # Use range/8 as the conservative seed before the walk; this is
+            # narrower than range/5 (old fallback) to avoid over-broad starts.
+            sigma = max((xmax - xmin) / 8.0, 0.5)
+            if hist is not None and hasattr(hist, "FindBin"):
+                try:
+                    half = peak_height / 2.0
+                    center_bin = hist.FindBin(peak_x)
+                    b_lo = hist.FindBin(xmin)
+                    b_hi = hist.FindBin(xmax)
+                    # Search left half-max
+                    left_x = xmin
+                    for b in range(center_bin, b_lo - 1, -1):
+                        if float(hist.GetBinContent(b)) <= half:
+                            left_x = float(hist.GetBinCenter(b))
+                            break
+                    # Search right half-max
+                    right_x = xmax
+                    for b in range(center_bin, b_hi + 1):
+                        if float(hist.GetBinContent(b)) <= half:
+                            right_x = float(hist.GetBinCenter(b))
+                            break
+                    fwhm_est = right_x - left_x
+                    if fwhm_est > 0:
+                        sigma = fwhm_est / _FWHM_TO_SIGMA
+                except Exception:
+                    pass
+        sigma = max(sigma, 1e-6)
 
         if fit_func == "gaus":
             return [peak_height, peak_x, sigma]
@@ -421,5 +473,50 @@ class FitFeature(Feature):
 
         return "\n".join(lines)
 
+    @staticmethod
+    def format_fit_results_short(fit_func: str, cached: dict) -> str:
+        """Return a compact ~5-line summary for the TCanvas TPaveText overlay.
 
-__all__ = ["FitFeature", "FIT_FUNCTIONS"]
+        Shows only the most useful quantities: chi2/ndf, centroid, sigma/FWHM,
+        and area for a Gaussian fit.  Intended to be placed in a corner without
+        covering the histogram data.
+        """
+        if "error" in cached:
+            return cached["error"]
+
+        chi2 = cached.get("chi2", 0.0)
+        ndf  = cached.get("ndf", 0)
+        parameters = cached.get("parameters", [])
+        errors     = cached.get("errors", [])
+
+        red_chi2 = (chi2 / ndf) if ndf > 0 else float("nan")
+        lines = [f"#chi^{{2}} / ndf = {red_chi2:.2f}"]
+
+        if fit_func in ("gaus", "gaus+pol0", "gaus+pol1") and len(parameters) >= 3:
+            mean    = parameters[1]
+            sigma   = parameters[2]
+            mean_e  = errors[1] if len(errors) > 1 else 0.0
+            sigma_e = errors[2] if len(errors) > 2 else 0.0
+            fwhm    = _FWHM_TO_SIGMA * sigma
+            const   = parameters[0]
+            area    = const * sigma * _SQRT_2PI
+            lines += [
+                f"Mean  = {mean:.2f} #pm {mean_e:.2f}",
+                f"#sigma    = {sigma:.2f} #pm {sigma_e:.2f}",
+                f"FWHM  = {fwhm:.2f}",
+                f"Area  = {area:.0f}",
+            ]
+        elif fit_func in ("2gaus", "2gaus+pol1") and len(parameters) >= 6:
+            for i, label in enumerate(("P1", "P2")):
+                m = parameters[i * 3 + 1]
+                s = parameters[i * 3 + 2]
+                fwhm = _FWHM_TO_SIGMA * s
+                lines.append(f"{label}: {m:.2f}  FWHM={fwhm:.2f}")
+        else:
+            names = FitFeature.get_param_display_names(fit_func)
+            for i, p in enumerate(parameters[:4]):
+                e    = errors[i] if i < len(errors) else 0.0
+                name = names[i] if i < len(names) else f"p{i}"
+                lines.append(f"{name} = {p:.3g} #pm {e:.2g}")
+
+        return "\n".join(lines)

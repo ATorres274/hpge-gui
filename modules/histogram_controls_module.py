@@ -223,6 +223,7 @@ class HistogramControlsModule:
         title: str = "",
         show_markers: bool = True,
         peak_energies: list[float] | None = None,
+        manual_peak_energies: list[float] | None = None,
     ) -> dict:
         """Assemble the options dict passed to ``HistogramRenderer``.
 
@@ -272,6 +273,9 @@ class HistogramControlsModule:
 
         if show_markers and peak_energies:
             options["markers"] = list(peak_energies)
+
+        if show_markers and manual_peak_energies:
+            options["manual_markers"] = list(manual_peak_energies)
 
         return options
 

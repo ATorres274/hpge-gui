@@ -92,6 +92,8 @@ class FitModule:
             "fit_options": "SQ",
             "energy": energy,
             "width": width,
+            "xmin": None,
+            "xmax": None,
             "params": [],
             "fixed_params": [],
             "peak_idx": peak_idx,
@@ -194,6 +196,8 @@ class FitModule:
                 fit_func, self.current_hist_clone, energy, width, xmin, xmax
             )
 
+        state["xmin"] = xmin
+        state["xmax"] = xmax
         state["fit_epoch"] += 1
         state["has_fit"] = False
         state["cached_results"] = None
