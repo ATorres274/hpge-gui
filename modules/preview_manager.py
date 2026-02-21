@@ -218,4 +218,7 @@ class HistogramRenderer:
         if options.get("manual_markers"):
             normalized["manual_markers"] = options["manual_markers"]
 
+        if options.get("pavetext"):
+            normalized["pavetext"] = options["pavetext"]
+
         return normalized

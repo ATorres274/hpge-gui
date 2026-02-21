@@ -780,5 +780,99 @@ class TestRendererApplyOptions(unittest.TestCase):
         yaxis.SetRangeUser.assert_not_called()
 
 
+class TestPavetextOption(unittest.TestCase):
+    """TPaveText overlay: pavetext flows from preview_opts → _normalize_options → renderer."""
+
+    def test_normalize_options_passes_pavetext(self):
+        from modules.preview_manager import HistogramRenderer
+        opts = HistogramRenderer._normalize_options({"pavetext": "Chi2/NDF = 1.23\nMean = 511.0"})
+        self.assertEqual(opts["pavetext"], "Chi2/NDF = 1.23\nMean = 511.0")
+
+    def test_normalize_options_omits_pavetext_when_absent(self):
+        from modules.preview_manager import HistogramRenderer
+        opts = HistogramRenderer._normalize_options({"logy": True})
+        self.assertNotIn("pavetext", opts)
+
+    def test_renderer_draws_pavetext_when_option_set(self):
+        """render_to_file must create and draw a TPaveText when pavetext is given."""
+        from features.renderer_feature import RootRenderer
+
+        root = MagicMock()
+        pave_mock = MagicMock()
+        root.TPaveText.return_value = pave_mock
+        root.gROOT = MagicMock()
+        root.gStyle = MagicMock()
+        root.gROOT.SetBatch = MagicMock()
+        root.gROOT.SetBatch.side_effect = None
+
+        canvas = MagicMock()
+        root.TCanvas.return_value = canvas
+
+        hist = MagicMock()
+        hist.Clone.return_value = hist
+        hist.GetName.return_value = "h"
+        hist.GetXaxis.return_value = MagicMock()
+        hist.GetYaxis.return_value = MagicMock()
+        hist.FindBin.return_value = 1
+        hist.GetBinContent.return_value = 100.0
+
+        import tempfile
+        import os
+        fd, path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        try:
+            r = RootRenderer()
+            r.render_to_file(
+                root, hist, path, 400, 300,
+                options={"pavetext": "Chi2 = 1.2\nMean = 511"},
+            )
+        except Exception:
+            pass  # ROOT mock may fail mid-way; we only care about the call
+        finally:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
+        root.TPaveText.assert_called()
+        pave_mock.AddText.assert_called()
+        pave_mock.Draw.assert_called()
+
+    def test_renderer_skips_pavetext_when_absent(self):
+        """render_to_file must NOT create a TPaveText when pavetext option is absent."""
+        from features.renderer_feature import RootRenderer
+
+        root = MagicMock()
+        root.gROOT = MagicMock()
+        root.gStyle = MagicMock()
+        canvas = MagicMock()
+        root.TCanvas.return_value = canvas
+
+        hist = MagicMock()
+        hist.Clone.return_value = hist
+        hist.GetName.return_value = "h"
+        hist.GetXaxis.return_value = MagicMock()
+        hist.GetYaxis.return_value = MagicMock()
+        hist.FindBin.return_value = 1
+        hist.GetBinContent.return_value = 100.0
+
+        import tempfile
+        import os
+        fd, path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        try:
+            r = RootRenderer()
+            r.render_to_file(root, hist, path, 400, 300, options={})
+        except Exception:
+            pass
+        finally:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
+        root.TPaveText.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

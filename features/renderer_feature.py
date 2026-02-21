@@ -128,6 +128,28 @@ class RootRenderer:
                         except Exception:
                             pass
 
+                        # Optional TPaveText overlay (fit results on the canvas)
+                        pavetext = options.get("pavetext")
+                        if pavetext:
+                            try:
+                                pave = root.TPaveText(0.50, 0.42, 0.97, 0.92, "NDC")
+                                pave.SetFillColor(0)
+                                pave.SetFillStyle(1001)
+                                pave.SetBorderSize(1)
+                                pave.SetTextAlign(12)
+                                pave.SetTextFont(42)
+                                pave.SetTextSize(0.040)
+                                for line in str(pavetext).split("\n"):
+                                    pave.AddText(line if line.strip() else " ")
+                                pave.Draw()
+                                try:
+                                    canvas.Modified()
+                                    canvas.Update()
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
+
                         canvas.Print(filepath)
                         if render_obj is not obj:
                             try:
