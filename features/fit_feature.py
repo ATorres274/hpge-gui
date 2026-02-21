@@ -421,5 +421,50 @@ class FitFeature(Feature):
 
         return "\n".join(lines)
 
+    @staticmethod
+    def format_fit_results_short(fit_func: str, cached: dict) -> str:
+        """Return a compact ~5-line summary for the TCanvas TPaveText overlay.
 
-__all__ = ["FitFeature", "FIT_FUNCTIONS"]
+        Shows only the most useful quantities: chi2/ndf, centroid, sigma/FWHM,
+        and area for a Gaussian fit.  Intended to be placed in a corner without
+        covering the histogram data.
+        """
+        if "error" in cached:
+            return cached["error"]
+
+        chi2 = cached.get("chi2", 0.0)
+        ndf  = cached.get("ndf", 0)
+        parameters = cached.get("parameters", [])
+        errors     = cached.get("errors", [])
+
+        red_chi2 = (chi2 / ndf) if ndf > 0 else float("nan")
+        lines = [f"#chi^{{2}} / ndf = {red_chi2:.3f}"]
+
+        if fit_func in ("gaus", "gaus+pol0", "gaus+pol1") and len(parameters) >= 3:
+            mean    = parameters[1]
+            sigma   = parameters[2]
+            mean_e  = errors[1] if len(errors) > 1 else 0.0
+            sigma_e = errors[2] if len(errors) > 2 else 0.0
+            fwhm    = _FWHM_TO_SIGMA * sigma
+            const   = parameters[0]
+            area    = const * sigma * _SQRT_2PI
+            lines += [
+                f"Mean  = {mean:.3f} #pm {mean_e:.3f}",
+                f"#sigma    = {sigma:.3f} #pm {sigma_e:.3f}",
+                f"FWHM  = {fwhm:.3f}",
+                f"Area  = {area:.0f}",
+            ]
+        elif fit_func in ("2gaus", "2gaus+pol1") and len(parameters) >= 6:
+            for i, label in enumerate(("P1", "P2")):
+                m = parameters[i * 3 + 1]
+                s = parameters[i * 3 + 2]
+                fwhm = _FWHM_TO_SIGMA * s
+                lines.append(f"{label}: {m:.3f}  FWHM={fwhm:.3f}")
+        else:
+            names = FitFeature.get_param_display_names(fit_func)
+            for i, p in enumerate(parameters[:4]):
+                e    = errors[i] if i < len(errors) else 0.0
+                name = names[i] if i < len(names) else f"p{i}"
+                lines.append(f"{name} = {p:.4g} #pm {e:.3g}")
+
+        return "\n".join(lines)

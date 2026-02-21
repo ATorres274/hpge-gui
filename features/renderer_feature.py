@@ -128,17 +128,20 @@ class RootRenderer:
                         except Exception:
                             pass
 
-                        # Optional TPaveText overlay (fit results on the canvas)
+                        # Optional TPaveText overlay (fit results on the canvas).
+                        # Placed in the lower-right corner so it sits in the
+                        # tail region and avoids covering the peak.
                         pavetext = options.get("pavetext")
                         if pavetext:
                             try:
-                                pave = root.TPaveText(0.50, 0.42, 0.97, 0.92, "NDC")
+                                pave = root.TPaveText(0.52, 0.08, 0.97, 0.45, "NDC")
                                 pave.SetFillColor(0)
                                 pave.SetFillStyle(1001)
+                                pave.SetFillColorAlpha(0, 0.75)  # semi-transparent
                                 pave.SetBorderSize(1)
                                 pave.SetTextAlign(12)
                                 pave.SetTextFont(42)
-                                pave.SetTextSize(0.040)
+                                pave.SetTextSize(0.055)
                                 for line in str(pavetext).split("\n"):
                                     pave.AddText(line if line.strip() else " ")
                                 pave.Draw()

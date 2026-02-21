@@ -874,5 +874,48 @@ class TestPavetextOption(unittest.TestCase):
         root.TPaveText.assert_not_called()
 
 
+class TestFormatFitResultsShort(unittest.TestCase):
+    """Unit tests for FitFeature.format_fit_results_short."""
+
+    def _cached_gaus(self):
+        return {
+            "chi2": 4.56, "ndf": 4, "status": 0,
+            "parameters": [4000.0, 511.0, 1.3],
+            "errors": [30.0, 0.05, 0.03],
+        }
+
+    def test_gaus_contains_chi2_ndf(self):
+        from features.fit_feature import FitFeature
+        text = FitFeature.format_fit_results_short("gaus", self._cached_gaus())
+        self.assertIn("1.14", text)  # 4.56/4 = 1.14
+
+    def test_gaus_contains_mean(self):
+        from features.fit_feature import FitFeature
+        text = FitFeature.format_fit_results_short("gaus", self._cached_gaus())
+        self.assertIn("511.000", text)
+
+    def test_gaus_contains_fwhm(self):
+        from features.fit_feature import FitFeature
+        text = FitFeature.format_fit_results_short("gaus", self._cached_gaus())
+        self.assertIn("FWHM", text)
+
+    def test_gaus_few_lines(self):
+        from features.fit_feature import FitFeature
+        text = FitFeature.format_fit_results_short("gaus", self._cached_gaus())
+        # Must be concise — no more than 6 lines
+        self.assertLessEqual(len(text.splitlines()), 6)
+
+    def test_error_cached_returns_error(self):
+        from features.fit_feature import FitFeature
+        text = FitFeature.format_fit_results_short("gaus", {"error": "fit failed"})
+        self.assertEqual(text, "fit failed")
+
+    def test_root_markup_present(self):
+        from features.fit_feature import FitFeature
+        text = FitFeature.format_fit_results_short("gaus", self._cached_gaus())
+        # ROOT TLatex markup for chi^2 should be present
+        self.assertIn("#chi", text)
+
+
 if __name__ == "__main__":
     unittest.main()
