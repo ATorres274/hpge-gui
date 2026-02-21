@@ -263,8 +263,8 @@ class FitExportFeature(Feature):
                             # Local time is intentional — this is a human-readable
                             # label on the cover page, not a machine-parsed timestamp.
                             datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            pdf_path,
                         )
-                        canvas.Print(pdf_path)
 
                         # ── Page 2: Overview ──────────────────────────────
                         self._draw_overview_page(
@@ -300,7 +300,7 @@ class FitExportFeature(Feature):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _draw_title_page(root, canvas, hist_title, completed, date_str) -> None:
+    def _draw_title_page(root, canvas, hist_title, completed, date_str, pdf_path) -> None:
         canvas.Clear()
         canvas.SetFillColor(0)
         canvas.SetBorderMode(0)
@@ -339,6 +339,8 @@ class FitExportFeature(Feature):
         pave.Draw()
         canvas.Modified()
         canvas.Update()
+        # Print while pave is still in scope (avoids Python GC before rendering)
+        canvas.Print(pdf_path)
 
     @staticmethod
     def _draw_overview_page(
@@ -433,7 +435,7 @@ class FitExportFeature(Feature):
         canvas.SetTopMargin(0.08)
         canvas.SetBottomMargin(0.12)
         try:
-            canvas.SetLogy(1)
+            canvas.SetLogy(0)
         except Exception:
             pass
 
