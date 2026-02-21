@@ -83,36 +83,35 @@ class HistogramPreviewRenderer:
         middle_bar = ttk.Frame(controls_frame)
         middle_bar.pack(fill=tk.X, padx=4, pady=(0, 0))
 
-        # Preview area — left: histogram, right: fit preview (same width)
-        preview_frame = ttk.Frame(content_frame)
+        # Preview area — horizontal PanedWindow: histogram (dominant) | fit panel (compact)
+        preview_frame = ttk.PanedWindow(content_frame, orient=tk.HORIZONTAL)
         preview_frame.pack(fill=tk.BOTH, expand=True)
 
         hist_area = ttk.Frame(preview_frame)
-        hist_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        preview_frame.add(hist_area, weight=3)
         preview_label = tk.Label(hist_area, bg="white")
         preview_label.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Separator(preview_frame, orient="vertical").pack(
-            side=tk.LEFT, fill=tk.Y, padx=1
-        )
-
         fit_area = ttk.Frame(preview_frame)
-        fit_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        preview_frame.add(fit_area, weight=1)
 
         fit_pane = ttk.PanedWindow(fit_area, orient=tk.VERTICAL)
         fit_pane.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
         results_outer = ttk.Frame(fit_pane)
-        fit_result_text = tk.Text(results_outer, wrap=tk.WORD, state=tk.DISABLED)
+        fit_result_text = tk.Text(
+            results_outer, wrap=tk.WORD, state=tk.DISABLED,
+            font=("TkFixedFont", 8), width=28,
+        )
         _result_sb = ttk.Scrollbar(results_outer, orient="vertical",
                                    command=fit_result_text.yview)
         fit_result_text.configure(yscrollcommand=_result_sb.set)
         _result_sb.pack(side=tk.RIGHT, fill=tk.Y)
         fit_result_text.pack(fill=tk.BOTH, expand=True, padx=(4, 0), pady=(4, 0))
-        fit_pane.add(results_outer, weight=3)
+        fit_pane.add(results_outer, weight=2)
 
         fit_preview_label = tk.Label(fit_pane, text="No fit yet", bg="white", fg="gray")
-        fit_pane.add(fit_preview_label, weight=1)
+        fit_pane.add(fit_preview_label, weight=3)
 
         self._fit_result_text = fit_result_text
         self._fit_preview_label = fit_preview_label
@@ -700,16 +699,20 @@ class HistogramPreviewRenderer:
             lambda e, us=ui_state: self._fit_on_func_changed(us),
         )
 
-        ttk.Label(row0, text="E (keV):").pack(side=tk.LEFT, padx=(0, 2))
-        ttk.Entry(row0, textvariable=ui_state["energy_var"], width=7).pack(
-            side=tk.LEFT, padx=(0, 4)
+        ttk.Label(row0, text="E:").pack(side=tk.LEFT, padx=(0, 1))
+        ttk.Entry(row0, textvariable=ui_state["energy_var"], width=6).pack(
+            side=tk.LEFT, padx=(0, 3)
         )
-        ttk.Label(row0, text="W (keV):").pack(side=tk.LEFT, padx=(0, 2))
-        ttk.Entry(row0, textvariable=ui_state["width_var"], width=7).pack(
-            side=tk.LEFT, padx=(0, 6)
+        ttk.Label(row0, text="W:").pack(side=tk.LEFT, padx=(0, 1))
+        ttk.Entry(row0, textvariable=ui_state["width_var"], width=5).pack(
+            side=tk.LEFT, padx=(0, 4)
         )
         ttk.Button(
             row0, text="Fit",
+            command=lambda fid=fit_id: self._fit_trigger(fid),
+        ).pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Button(
+            row0, text="Refit",
             command=lambda fid=fit_id: self._fit_trigger(fid),
         ).pack(side=tk.LEFT)
 
@@ -739,16 +742,16 @@ class HistogramPreviewRenderer:
             grid_row = i // cols_per_row
             col_base = (i % cols_per_row) * 3
             ttk.Label(frame, text=f"{name}:").grid(
-                row=grid_row, column=col_base, sticky="e", padx=(4, 2), pady=(2, 1)
+                row=grid_row, column=col_base, sticky="e", padx=(2, 1), pady=(1, 0)
             )
             var = tk.StringVar(value="")
-            ttk.Entry(frame, textvariable=var, width=9).grid(
-                row=grid_row, column=col_base + 1, sticky="w", padx=(0, 2), pady=(2, 1)
+            ttk.Entry(frame, textvariable=var, width=7).grid(
+                row=grid_row, column=col_base + 1, sticky="w", padx=(0, 1), pady=(1, 0)
             )
             var.trace_add("write", lambda *_, us=ui_state: self._fit_schedule_refit(us))
             fixed_var = tk.BooleanVar(value=False)
             ttk.Checkbutton(frame, text="Fix", variable=fixed_var).grid(
-                row=grid_row, column=col_base + 2, sticky="w", padx=(0, 8), pady=(2, 1)
+                row=grid_row, column=col_base + 2, sticky="w", padx=(0, 4), pady=(1, 0)
             )
             ui_state["param_entries"].append(var)
             ui_state["param_fixed_vars"].append(fixed_var)
@@ -863,14 +866,16 @@ class HistogramPreviewRenderer:
         self._fit_module.perform_fit(fit_id, root)
 
     def _on_fit_completed(self, fit_id: int, cached: dict) -> None:
-        """Called by FitModule after a fit: update results text + preview."""
+        """Called by FitModule after a fit: update results text + zoomed preview."""
         state = self._fit_module.get_fit_state(fit_id) if self._fit_module else None
+        energy = None
+        width = 20.0
         if state is not None:
-            text = FitFeature.format_fit_results(
-                state.get("fit_func", "gaus"),
-                state.get("fit_options", "SQ"),
-                cached,
-            )
+            fit_func    = state.get("fit_func", "gaus")
+            fit_options = state.get("fit_options", "SQ")
+            energy      = state.get("energy")
+            width       = state.get("width") or 20.0
+            text = FitFeature.format_fit_results(fit_func, fit_options, cached)
             if self._fit_result_text is not None:
                 try:
                     self._fit_result_text.config(state=tk.NORMAL)
@@ -880,7 +885,7 @@ class HistogramPreviewRenderer:
                 except Exception:
                     pass
 
-        # Render the fitted histogram clone into the fit preview label.
+        # Render the fitted histogram clone zoomed to the fit window.
         pm = getattr(self, "_preview_manager", None)
         fit_label = self._fit_preview_label
         if pm is not None and fit_label is not None and self._fit_module is not None:
@@ -888,7 +893,18 @@ class HistogramPreviewRenderer:
             clone = self._fit_module.current_hist_clone
             if root is not None and clone is not None:
                 try:
-                    pm.render_into_label_async(root, clone, fit_label, options={}, delay_ms=80)
+                    preview_opts = {"logy": True}
+                    if energy is not None:
+                        try:
+                            xmin = float(energy) - float(width) / 2.0
+                            xmax = float(energy) + float(width) / 2.0
+                            preview_opts["xmin"] = xmin
+                            preview_opts["xmax"] = xmax
+                        except Exception:
+                            pass
+                    pm.render_into_label_async(
+                        root, clone, fit_label, options=preview_opts, delay_ms=80
+                    )
                 except Exception as exc:
                     self._dispatcher.emit(
                         ErrorLevel.INFO,

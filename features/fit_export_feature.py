@@ -12,6 +12,7 @@ import os
 from contextlib import redirect_stdout, redirect_stderr
 
 from features.feature import Feature
+from features.fit_feature import FitFeature
 from features.peak_export_feature import _fit_state_val
 
 
@@ -275,7 +276,7 @@ class FitExportFeature(Feature):
                         for fit_idx, (fit_id, state) in enumerate(completed):
                             self._draw_fit_page(
                                 root, canvas, hist, fit_id, fit_idx,
-                                state, FitFeature, pdf_path,
+                                state, pdf_path,
                             )
 
                         canvas.Print(f"{pdf_path}]")  # close PDF
@@ -424,7 +425,7 @@ class FitExportFeature(Feature):
                 pass
 
     def _draw_fit_page(
-        self, root, canvas, hist, fit_id, fit_idx, state, FitFeature, pdf_path,
+        self, root, canvas, hist, fit_id, fit_idx, state, pdf_path,
     ) -> None:
         canvas.Clear()
         canvas.SetLeftMargin(0.08)

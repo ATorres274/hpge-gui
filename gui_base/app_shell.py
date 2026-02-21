@@ -302,6 +302,20 @@ class RootBrowserApp(tk.Tk):
                 context="AppShell._on_browser_selection_changed",
                 exception=e
             )
+        # Show object details in the details panel directly
+        try:
+            details_parent = getattr(self, 'details_frame', None)
+            if details_parent is not None:
+                file_manager = self.browser_tab.module_registry.get('file_manager')
+                if file_manager is not None:
+                    file_manager.show_details(details_parent, obj, path)
+        except Exception as e:
+            self._error_dispatcher.emit(
+                ErrorLevel.INFO,
+                "Failed to show object details",
+                context="AppShell._on_browser_selection_changed",
+                exception=e
+            )
 
     def _on_browser_focus_changed(self, visible: bool) -> None:
         """Callback from browser tab when browser focus changes.
