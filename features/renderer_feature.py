@@ -176,6 +176,16 @@ class RootRenderer:
             pass
 
     def _apply_options(self, root, canvas, obj, options: dict) -> None:
+        # Suppress the ROOT stats box globally for this render.
+        try:
+            root.gStyle.SetOptStat(0)
+        except Exception:
+            pass
+        try:
+            obj.SetStats(0)
+        except Exception:
+            pass
+
         # Apply default tight margins so exported images don't have
         # excessive white space around axis labels and titles.
         # Users can override these via options keys if needed.
@@ -260,6 +270,35 @@ class RootRenderer:
         xrange = options.get("xrange")
         if xrange and xrange[0] is not None and xrange[1] is not None:
             xaxis.SetRangeUser(xrange[0], xrange[1])
+
+            # Auto-fit Y range to the visible window so the peak fills the
+            # preview vertically.  Only done when xrange is explicitly set
+            # (i.e. a zoomed fit preview) and no explicit yrange was supplied.
+            if yaxis and not options.get("yrange"):
+                try:
+                    b1 = obj.FindBin(float(xrange[0]))
+                    b2 = obj.FindBin(float(xrange[1]))
+                    y_max = 0.0
+                    y_min = float("inf")
+                    for b in range(max(1, b1), b2 + 1):
+                        val = float(obj.GetBinContent(b))
+                        if val > y_max:
+                            y_max = val
+                        if val > 0 and val < y_min:
+                            y_min = val
+                    if y_max > 0:
+                        logy = options.get("logy", False)
+                        if logy:
+                            # In log scale keep a one-decade margin below and
+                            # 30 % headroom above so axis labels don't clip.
+                            lo = max(y_min * 0.5, 0.5)
+                            hi = y_max * 1.5
+                        else:
+                            lo = 0.0
+                            hi = y_max * 1.15
+                        yaxis.SetRangeUser(lo, hi)
+                except Exception:
+                    pass
 
         if yaxis:
             yrange = options.get("yrange")

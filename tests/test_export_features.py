@@ -663,5 +663,122 @@ class TestConfigureEventGuard(unittest.TestCase):
         self.assertEqual(len(renders2), 3)
 
 
+class TestRendererApplyOptions(unittest.TestCase):
+    """Unit tests for RootRenderer._apply_options.
+
+    Verify that:
+    1. The stats box is suppressed (gStyle.SetOptStat and obj.SetStats called).
+    2. When xrange is set, Y range is auto-computed from bin contents.
+    3. An explicit yrange in options overrides auto-range.
+    """
+
+    def _make_renderer(self):
+        from features.renderer_feature import RootRenderer
+        return RootRenderer()
+
+    def _make_root(self):
+        root = MagicMock()
+        root.gStyle = MagicMock()
+        return root
+
+    def _make_canvas(self):
+        canvas = MagicMock()
+        pad = MagicMock()
+        canvas.GetPad.return_value = pad
+        return canvas, pad
+
+    def _make_hist(self, bins=None):
+        """Return a fake histogram with GetXaxis / GetYaxis / FindBin / GetBinContent."""
+        hist = MagicMock()
+        xaxis = MagicMock()
+        yaxis = MagicMock()
+        hist.GetXaxis.return_value = xaxis
+        hist.GetYaxis.return_value = yaxis
+
+        # Map bin → content; bins is dict {bin_index: count}
+        bins = bins or {}
+        def _get_bin_content(b):
+            return float(bins.get(b, 0.0))
+        hist.GetBinContent.side_effect = _get_bin_content
+
+        def _find_bin(x):
+            # toy: bin = int(x)
+            return int(x)
+        hist.FindBin.side_effect = _find_bin
+        return hist, xaxis, yaxis
+
+    def test_stats_suppressed_via_gstyle(self):
+        r = self._make_renderer()
+        root = self._make_root()
+        canvas, _ = self._make_canvas()
+        hist, _, _ = self._make_hist()
+        r._apply_options(root, canvas, hist, {})
+        root.gStyle.SetOptStat.assert_called_once_with(0)
+
+    def test_stats_suppressed_on_obj(self):
+        r = self._make_renderer()
+        root = self._make_root()
+        canvas, _ = self._make_canvas()
+        hist, _, _ = self._make_hist()
+        r._apply_options(root, canvas, hist, {})
+        hist.SetStats.assert_called_once_with(0)
+
+    def test_auto_yrange_set_when_xrange_given(self):
+        """When xrange=(500, 525), yrange should be auto-computed from bins 500..525."""
+        r = self._make_renderer()
+        root = self._make_root()
+        canvas, _ = self._make_canvas()
+        # bins 500..525 with peak at bin 512 = 4000
+        bins = {b: float(100 + (b - 500) * 10) for b in range(500, 526)}
+        bins[512] = 4000.0
+        hist, xaxis, yaxis = self._make_hist(bins)
+        r._apply_options(root, canvas, hist, {"xrange": (500.0, 525.0)})
+        # yaxis.SetRangeUser should have been called with values derived from bins
+        self.assertTrue(yaxis.SetRangeUser.called,
+                        "yaxis.SetRangeUser should be called for auto Y range")
+        call_args = yaxis.SetRangeUser.call_args[0]
+        lo, hi = call_args
+        # hi must accommodate the peak (4000) with headroom
+        self.assertGreater(hi, 4000.0)
+        # lo must be non-negative in linear mode
+        self.assertGreaterEqual(lo, 0.0)
+
+    def test_auto_yrange_logy_uses_positive_floor(self):
+        """In logy mode the lower bound must be > 0."""
+        r = self._make_renderer()
+        root = self._make_root()
+        canvas, _ = self._make_canvas()
+        bins = {b: float(50 + b) for b in range(10, 30)}
+        hist, xaxis, yaxis = self._make_hist(bins)
+        r._apply_options(root, canvas, hist,
+                         {"xrange": (10.0, 30.0), "logy": True})
+        call_args = yaxis.SetRangeUser.call_args[0]
+        lo, _ = call_args
+        self.assertGreater(lo, 0.0, "log-Y lower bound must be positive")
+
+    def test_explicit_yrange_overrides_auto(self):
+        """An explicit yrange option must take precedence over auto-range."""
+        r = self._make_renderer()
+        root = self._make_root()
+        canvas, _ = self._make_canvas()
+        bins = {b: float(1000) for b in range(500, 526)}
+        hist, xaxis, yaxis = self._make_hist(bins)
+        r._apply_options(root, canvas, hist,
+                         {"xrange": (500.0, 525.0), "yrange": (5.0, 2000.0)})
+        # The last SetRangeUser call must use the explicit values
+        last_call = yaxis.SetRangeUser.call_args_list[-1][0]
+        self.assertAlmostEqual(last_call[0], 5.0,   places=5)
+        self.assertAlmostEqual(last_call[1], 2000.0, places=5)
+
+    def test_no_auto_yrange_when_xrange_absent(self):
+        """Without xrange the auto Y calculation must not be attempted."""
+        r = self._make_renderer()
+        root = self._make_root()
+        canvas, _ = self._make_canvas()
+        hist, xaxis, yaxis = self._make_hist()
+        r._apply_options(root, canvas, hist, {})
+        yaxis.SetRangeUser.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
