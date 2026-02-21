@@ -64,24 +64,12 @@ class RootRenderer:
                                 for obj_to_remove in to_remove:
                                     func_list.Remove(obj_to_remove)
 
-                        if options.get("clear_functions", False):
-                            if hasattr(render_obj, "GetListOfFunctions"):
-                                fit_list = render_obj.GetListOfFunctions()
-                                while fit_list.GetSize() > 1:
-                                    func = fit_list.At(0)
-                                    fit_list.Remove(func)
-
-                        # When a specific TF1 is provided, clear ALL attached
-                        # functions from the clone and draw only that one.
-                        # This ensures each fit preview shows its own curve.
+                        # When a specific TF1 is provided, suppress auto-drawing
+                        # of any functions that ROOT attached to the clone (from
+                        # prior fits on the shared histogram) by using the
+                        # "HIST" draw option.  The caller's specific TF1 is then
+                        # drawn explicitly with "same" below.
                         fit_func_obj = options.get("fit_func_obj")
-                        if fit_func_obj is not None:
-                            if hasattr(render_obj, "GetListOfFunctions"):
-                                try:
-                                    fl = render_obj.GetListOfFunctions()
-                                    fl.Clear()
-                                except Exception:
-                                    pass
 
                         try:
                             canvas.SetDPI(150)
@@ -90,7 +78,9 @@ class RootRenderer:
 
                         self._apply_options(root, canvas, render_obj, options)
 
-                        render_obj.Draw()
+                        # "HIST" suppresses auto-drawn attached functions so
+                        # only our explicitly-provided TF1 appears.
+                        render_obj.Draw("HIST" if fit_func_obj is not None else "")
 
                         # Draw the per-fit TF1 curve after the histogram.
                         if fit_func_obj is not None:

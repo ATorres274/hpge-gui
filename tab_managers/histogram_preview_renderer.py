@@ -859,6 +859,11 @@ class HistogramPreviewRenderer:
 
         Used both when a fit completes and when the user selects a fit in the
         listbox so the preview always tracks the selected fit.
+
+        A fresh TF1 is reconstructed from the cached parameter values so that
+        the preview is never tied to the stored C++ fit_func_obj, which may be
+        invalidated when a subsequent fit removes it from the shared histogram's
+        function list.
         """
         if self._fit_module is None:
             return
@@ -866,11 +871,10 @@ class HistogramPreviewRenderer:
         if state is None:
             return
 
-        fit_func     = state.get("fit_func", "gaus")
-        energy       = state.get("energy")
-        width        = state.get("width") or 20.0
-        cached       = state.get("cached_results")
-        fit_func_obj = state.get("fit_func_obj")   # TF1 specific to this fit
+        fit_func = state.get("fit_func", "gaus")
+        energy   = state.get("energy")
+        width    = state.get("width") or 20.0
+        cached   = state.get("cached_results")
 
         pavetext = None
         if cached and "error" not in cached:
@@ -888,19 +892,39 @@ class HistogramPreviewRenderer:
 
         try:
             preview_opts: dict = {}
-            if energy is not None:
+
+            # Determine zoom window from the stored fit range (preferred) or
+            # fall back to energy ± width/2.
+            xmin = state.get("xmin")
+            xmax = state.get("xmax")
+            if xmin is None and energy is not None:
                 try:
                     xmin = float(energy) - float(width) / 2.0
                     xmax = float(energy) + float(width) / 2.0
-                    preview_opts["xmin"] = xmin
-                    preview_opts["xmax"] = xmax
                 except Exception:
-                    pass
+                    xmin = xmax = None
+
+            if xmin is not None and xmax is not None:
+                preview_opts["xmin"] = xmin
+                preview_opts["xmax"] = xmax
+
             if pavetext:
                 preview_opts["pavetext"] = pavetext
-            # Pass the per-fit TF1 so the renderer draws only this curve.
-            if fit_func_obj is not None:
-                preview_opts["fit_func_obj"] = fit_func_obj
+
+            # Recreate a fresh TF1 from the cached fitted parameters so the
+            # preview is independent of the shared current_hist_clone function
+            # list (where old TF1s are removed on re-fit).
+            if cached and "parameters" in cached and xmin is not None:
+                try:
+                    formula = FitFeature.get_fit_formula(fit_func)
+                    tf1_name = f"_preview_tf1_{fit_id}"
+                    fresh_tf1 = root.TF1(tf1_name, formula, xmin, xmax)
+                    for i, p in enumerate(cached["parameters"]):
+                        fresh_tf1.SetParameter(i, float(p))
+                    preview_opts["fit_func_obj"] = fresh_tf1
+                except Exception:
+                    pass
+
             pm.render_into_label_async(
                 root, clone, fit_label, options=preview_opts, delay_ms=80
             )
