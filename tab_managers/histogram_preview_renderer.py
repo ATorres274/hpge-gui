@@ -95,12 +95,18 @@ class HistogramPreviewRenderer:
         fit_area = ttk.Frame(preview_frame)
         preview_frame.add(fit_area, weight=1)
 
-        # The fit preview fills the entire right panel — TPaveText overlay on
-        # the TCanvas carries the results text, so no separate Text widget needed.
+        # Fit preview canvas (top) — zoomed, linear scale
         fit_preview_label = tk.Label(fit_area, text="No fit yet", bg="white", fg="gray")
-        fit_preview_label.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+        fit_preview_label.pack(fill=tk.BOTH, expand=True, padx=2, pady=(2, 0))
 
-        self._fit_result_text = None          # no longer used
+        # Compact results text (bottom) — fit parameters + goodness of fit
+        fit_result_text = tk.Text(
+            fit_area, wrap=tk.WORD, state=tk.DISABLED,
+            font=("TkFixedFont", 8), height=6,
+        )
+        fit_result_text.pack(fill=tk.X, padx=2, pady=(0, 2))
+
+        self._fit_result_text = fit_result_text
         self._fit_preview_label = fit_preview_label
         self._preview_label = preview_label
         self._current_obj = obj
@@ -853,20 +859,29 @@ class HistogramPreviewRenderer:
         self._fit_module.perform_fit(fit_id, root)
 
     def _on_fit_completed(self, fit_id: int, cached: dict) -> None:
-        """Called by FitModule after a fit: render zoomed preview with results overlay."""
+        """Called by FitModule after a fit: zoom preview to peak (linear) + show results."""
         state = self._fit_module.get_fit_state(fit_id) if self._fit_module else None
         energy = None
         width = 20.0
-        pavetext = None
+        results_text = None
         if state is not None:
             fit_func    = state.get("fit_func", "gaus")
             fit_options = state.get("fit_options", "SQ")
             energy      = state.get("energy")
             width       = state.get("width") or 20.0
-            pavetext    = FitFeature.format_fit_results(fit_func, fit_options, cached)
+            results_text = FitFeature.format_fit_results(fit_func, fit_options, cached)
 
-        # Render the fitted histogram clone zoomed to the fit window with
-        # the results as a TPaveText overlay on the TCanvas itself.
+        # Update the compact results textbox below the preview canvas.
+        if self._fit_result_text is not None and results_text is not None:
+            try:
+                self._fit_result_text.config(state=tk.NORMAL)
+                self._fit_result_text.delete("1.0", tk.END)
+                self._fit_result_text.insert(tk.END, results_text)
+                self._fit_result_text.config(state=tk.DISABLED)
+            except Exception:
+                pass
+
+        # Render the fitted histogram clone zoomed to the fit window (linear scale).
         pm = getattr(self, "_preview_manager", None)
         fit_label = self._fit_preview_label
         if pm is not None and fit_label is not None and self._fit_module is not None:
@@ -874,7 +889,7 @@ class HistogramPreviewRenderer:
             clone = self._fit_module.current_hist_clone
             if root is not None and clone is not None:
                 try:
-                    preview_opts = {"logy": True}
+                    preview_opts: dict = {}
                     if energy is not None:
                         try:
                             xmin = float(energy) - float(width) / 2.0
@@ -883,8 +898,6 @@ class HistogramPreviewRenderer:
                             preview_opts["xmax"] = xmax
                         except Exception:
                             pass
-                    if pavetext:
-                        preview_opts["pavetext"] = pavetext
                     pm.render_into_label_async(
                         root, clone, fit_label, options=preview_opts, delay_ms=80
                     )
