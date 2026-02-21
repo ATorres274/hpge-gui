@@ -131,43 +131,76 @@ class FitFeature(Feature):
     ) -> list[float]:
         """Return sensible initial parameter guesses for *fit_func*.
 
-        Uses the histogram's mean and bin content near *energy* to seed
-        amplitude and mean estimates.  *width* is converted to sigma for
-        Gaussian fits.
+        Scans ``[xmin, xmax]`` for the actual maximum bin to seed amplitude
+        and centroid.  Estimates sigma from the half-maximum crossing points
+        rather than a fixed fraction of the window width.
 
         Args:
             fit_func: One of gaus, gaus+pol1, gaus+pol2, gaus+erf.
             hist: ROOT TH1 histogram (used to estimate mean and peak height).
-            energy: Peak location hint in keV (``None`` → use histogram mean).
-            width: Peak width hint in keV (``None`` → auto-estimate).
+            energy: Peak location hint in keV (``None`` → use max-bin centre).
+            width: Peak width hint in keV (``None`` → auto-estimate from FWHM).
             xmin: Left edge of fit range.
             xmax: Right edge of fit range.
 
         Returns:
             List of ``float`` initial parameter values.
         """
-        try:
-            hist_mean = (
-                float(hist.GetMean())
-                if hist and hasattr(hist, "GetMean")
-                else (xmin + xmax) / 2.0
-            )
-        except Exception:
-            hist_mean = (xmin + xmax) / 2.0
+        # --- locate the peak bin within [xmin, xmax] -----------------------
+        peak_height = 1.0
+        peak_x = energy if energy is not None else (xmin + xmax) / 2.0
 
-        peak_x = energy if energy is not None else hist_mean
+        if hist is not None and hasattr(hist, "FindBin"):
+            try:
+                b_lo = hist.FindBin(xmin)
+                b_hi = hist.FindBin(xmax)
+                if b_hi >= b_lo:
+                    max_content = -1.0
+                    max_bin = b_lo
+                    for b in range(b_lo, b_hi + 1):
+                        c = float(hist.GetBinContent(b))
+                        if c > max_content:
+                            max_content = c
+                            max_bin = b
+                    peak_height = max(max_content, 1.0)
+                    # Prefer energy hint for mean; fall back to max-bin centre.
+                    if energy is None:
+                        peak_x = float(hist.GetBinCenter(max_bin))
+            except Exception:
+                pass
 
-        try:
-            peak_bin = hist.FindBin(peak_x) if hist and hasattr(hist, "FindBin") else None
-            peak_height = (
-                float(hist.GetBinContent(peak_bin)) if peak_bin is not None else 1.0
-            )
-        except Exception:
-            peak_height = 1.0
-
-        if width is None or width <= 0:
-            width = max((xmax - xmin) / 5.0, 1.0)
-        sigma = max(float(width) / _FWHM_TO_SIGMA, 1e-6)
+        # --- estimate sigma from FWHM or explicit width --------------------
+        if width is not None and width > 0:
+            sigma = float(width) / _FWHM_TO_SIGMA
+        else:
+            # Walk outward from peak_x to find half-maximum crossing.
+            # Use range/8 as the conservative seed before the walk; this is
+            # narrower than range/5 (old fallback) to avoid over-broad starts.
+            sigma = max((xmax - xmin) / 8.0, 0.5)
+            if hist is not None and hasattr(hist, "FindBin"):
+                try:
+                    half = peak_height / 2.0
+                    center_bin = hist.FindBin(peak_x)
+                    b_lo = hist.FindBin(xmin)
+                    b_hi = hist.FindBin(xmax)
+                    # Search left half-max
+                    left_x = xmin
+                    for b in range(center_bin, b_lo - 1, -1):
+                        if float(hist.GetBinContent(b)) <= half:
+                            left_x = float(hist.GetBinCenter(b))
+                            break
+                    # Search right half-max
+                    right_x = xmax
+                    for b in range(center_bin, b_hi + 1):
+                        if float(hist.GetBinContent(b)) <= half:
+                            right_x = float(hist.GetBinCenter(b))
+                            break
+                    fwhm_est = right_x - left_x
+                    if fwhm_est > 0:
+                        sigma = fwhm_est / _FWHM_TO_SIGMA
+                except Exception:
+                    pass
+        sigma = max(sigma, 1e-6)
 
         if fit_func == "gaus":
             return [peak_height, peak_x, sigma]

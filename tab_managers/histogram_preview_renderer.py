@@ -771,6 +771,8 @@ class HistogramPreviewRenderer:
                 self._fit_listbox.see(idx)
             except (ValueError, AttributeError):
                 pass
+        # Update the preview canvas for the newly selected fit
+        self._render_fit_preview(fit_id)
 
     def _fit_on_func_changed(self, ui_state: dict) -> None:
         fit_func = ui_state["fit_func_var"].get()
@@ -852,49 +854,63 @@ class HistogramPreviewRenderer:
             return
         self._fit_module.perform_fit(fit_id, root)
 
-    def _on_fit_completed(self, fit_id: int, cached: dict) -> None:
-        """Called by FitModule after a fit: render zoomed (linear) preview with compact overlay."""
-        state = self._fit_module.get_fit_state(fit_id) if self._fit_module else None
-        energy = None
-        width = 20.0
-        pavetext = None
-        if state is not None:
-            fit_func    = state.get("fit_func", "gaus")
-            fit_options = state.get("fit_options", "SQ")
-            energy      = state.get("energy")
-            width       = state.get("width") or 20.0
-            pavetext    = FitFeature.format_fit_results_short(fit_func, cached)
+    def _render_fit_preview(self, fit_id: int) -> None:
+        """Render (or re-render) the zoomed fit preview for *fit_id*.
 
-        # Render the fitted histogram clone zoomed to the fit window (linear
-        # scale) with a compact TPaveText overlay in the lower-right corner.
+        Used both when a fit completes and when the user selects a fit in the
+        listbox so the preview always tracks the selected fit.
+        """
+        if self._fit_module is None:
+            return
+        state = self._fit_module.get_fit_state(fit_id)
+        if state is None:
+            return
+
+        fit_func = state.get("fit_func", "gaus")
+        energy   = state.get("energy")
+        width    = state.get("width") or 20.0
+        cached   = state.get("cached_results")
+
+        pavetext = None
+        if cached and "error" not in cached:
+            pavetext = FitFeature.format_fit_results_short(fit_func, cached)
+
         pm = getattr(self, "_preview_manager", None)
         fit_label = self._fit_preview_label
-        if pm is not None and fit_label is not None and self._fit_module is not None:
-            root = self._fit_module.get_root_module(getattr(self, "_app", None))
-            clone = self._fit_module.current_hist_clone
-            if root is not None and clone is not None:
+        if pm is None or fit_label is None:
+            return
+
+        root  = self._fit_module.get_root_module(getattr(self, "_app", None))
+        clone = self._fit_module.current_hist_clone
+        if root is None or clone is None:
+            return
+
+        try:
+            preview_opts: dict = {}
+            if energy is not None:
                 try:
-                    preview_opts: dict = {}
-                    if energy is not None:
-                        try:
-                            xmin = float(energy) - float(width) / 2.0
-                            xmax = float(energy) + float(width) / 2.0
-                            preview_opts["xmin"] = xmin
-                            preview_opts["xmax"] = xmax
-                        except Exception:
-                            pass
-                    if pavetext:
-                        preview_opts["pavetext"] = pavetext
-                    pm.render_into_label_async(
-                        root, clone, fit_label, options=preview_opts, delay_ms=80
-                    )
-                except Exception as exc:
-                    self._dispatcher.emit(
-                        ErrorLevel.INFO,
-                        "Fit preview render failed",
-                        context="HistogramPreviewRenderer._on_fit_completed",
-                        exception=exc,
-                    )
+                    xmin = float(energy) - float(width) / 2.0
+                    xmax = float(energy) + float(width) / 2.0
+                    preview_opts["xmin"] = xmin
+                    preview_opts["xmax"] = xmax
+                except Exception:
+                    pass
+            if pavetext:
+                preview_opts["pavetext"] = pavetext
+            pm.render_into_label_async(
+                root, clone, fit_label, options=preview_opts, delay_ms=80
+            )
+        except Exception as exc:
+            self._dispatcher.emit(
+                ErrorLevel.INFO,
+                "Fit preview render failed",
+                context="HistogramPreviewRenderer._render_fit_preview",
+                exception=exc,
+            )
+
+    def _on_fit_completed(self, fit_id: int, cached: dict) -> None:
+        """Called by FitModule after a fit completes."""
+        self._render_fit_preview(fit_id)
 
     # ------------------------------------------------------------------
     # Save dialog

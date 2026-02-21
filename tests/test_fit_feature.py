@@ -135,11 +135,13 @@ class TestGetFitRange(unittest.TestCase):
 
 class TestDefaultFitParams(unittest.TestCase):
 
-    def _make_hist(self, mean=100.0, bin_content=1000.0):
+    def _make_hist(self, mean=100.0, bin_content=1000.0, bin_center=None):
         hist = MagicMock()
         hist.GetMean.return_value = mean
         hist.FindBin.return_value = 50
         hist.GetBinContent.return_value = bin_content
+        # GetBinCenter returns the expected mean (centre of max bin)
+        hist.GetBinCenter.return_value = mean if bin_center is None else bin_center
         return hist
 
     def test_gaus_returns_three_params(self):
@@ -178,20 +180,26 @@ class TestDefaultFitParams(unittest.TestCase):
         # sigma = width / 2.355 ≈ 10.0
         self.assertAlmostEqual(params[2], 10.0, places=2)
 
-    def test_none_energy_uses_hist_mean(self):
-        hist = self._make_hist(mean=250.0)
+    def test_none_energy_uses_max_bin_center(self):
+        hist = self._make_hist(mean=250.0, bin_center=250.0)
         params = FitFeature.default_fit_params("gaus", hist, None, 20.0, 200.0, 300.0)
-        # Mean param should be close to histogram mean (250.0)
+        # Mean param should come from the max-bin centre (250.0)
         self.assertAlmostEqual(params[1], 250.0)
 
     def test_zero_or_none_width_auto_estimated(self):
         params = FitFeature.default_fit_params("gaus", self._make_hist(), 100.0, None, 90.0, 110.0)
-        # width = (110-90)/5 = 4.0  → sigma = 4.0/2.355
+        # Sigma is estimated from half-max scan or conservative fallback; must be > 0
         self.assertGreater(params[2], 0)
 
     def test_hist_none_still_returns_params(self):
         params = FitFeature.default_fit_params("gaus", None, 100.0, 10.0, 90.0, 110.0)
         self.assertEqual(len(params), 3)
+
+    def test_amplitude_uses_max_bin_content(self):
+        hist = self._make_hist(bin_content=5000.0)
+        params = FitFeature.default_fit_params("gaus", hist, 100.0, 10.0, 90.0, 110.0)
+        # Constant (amplitude) should be seeded from max bin content
+        self.assertAlmostEqual(params[0], 5000.0)
 
 
 # ---------------------------------------------------------------------------
