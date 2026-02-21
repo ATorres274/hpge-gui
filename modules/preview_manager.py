@@ -221,4 +221,9 @@ class HistogramRenderer:
         if options.get("pavetext"):
             normalized["pavetext"] = options["pavetext"]
 
+        # Pass ROOT TF1 object for per-fit curve overlay straight through
+        # without modification — it is a live ROOT object, not a plain value.
+        if options.get("fit_func_obj") is not None:
+            normalized["fit_func_obj"] = options["fit_func_obj"]
+
         return normalized

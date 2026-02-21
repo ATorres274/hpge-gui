@@ -905,8 +905,8 @@ class HistogramPreviewRenderer:
                     fit_func, cached["parameters"]
                 )
                 if mean is not None and sigma is not None and sigma > 0:
-                    preview_xmin = mean - 3.0 * sigma
-                    preview_xmax = mean + 3.0 * sigma
+                    preview_xmin = mean - 4.0 * sigma
+                    preview_xmax = mean + 4.0 * sigma
 
             if preview_xmin is None:
                 preview_xmin = state.get("xmin")
@@ -942,6 +942,10 @@ class HistogramPreviewRenderer:
                     formula = FitFeature.get_fit_formula(fit_func)
                     tf1_name = f"_preview_tf1_{fit_id}"
                     fresh_tf1 = root.TF1(tf1_name, formula, xmin, xmax)
+                    try:
+                        fresh_tf1.SetNpx(500)
+                    except Exception:
+                        pass
                     for i, p in enumerate(cached["parameters"]):
                         fresh_tf1.SetParameter(i, float(p))
                     preview_opts["fit_func_obj"] = fresh_tf1

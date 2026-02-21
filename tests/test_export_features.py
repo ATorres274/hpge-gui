@@ -793,6 +793,19 @@ class TestPavetextOption(unittest.TestCase):
         opts = HistogramRenderer._normalize_options({"logy": True})
         self.assertNotIn("pavetext", opts)
 
+    def test_normalize_options_passes_fit_func_obj(self):
+        """fit_func_obj must survive _normalize_options unchanged."""
+        from modules.preview_manager import HistogramRenderer
+        sentinel = object()
+        opts = HistogramRenderer._normalize_options({"fit_func_obj": sentinel})
+        self.assertIs(opts["fit_func_obj"], sentinel)
+
+    def test_normalize_options_omits_fit_func_obj_when_none(self):
+        """fit_func_obj=None must NOT appear in normalized options."""
+        from modules.preview_manager import HistogramRenderer
+        opts = HistogramRenderer._normalize_options({"fit_func_obj": None})
+        self.assertNotIn("fit_func_obj", opts)
+
     def test_renderer_draws_pavetext_when_option_set(self):
         """render_to_file must create and draw a TPaveText when pavetext is given."""
         from features.renderer_feature import RootRenderer
