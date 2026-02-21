@@ -471,7 +471,7 @@ class FitFeature(Feature):
         errors     = cached.get("errors", [])
 
         red_chi2 = (chi2 / ndf) if ndf > 0 else float("nan")
-        lines = [f"#chi^{{2}} / ndf = {red_chi2:.3f}"]
+        lines = [f"#chi^{{2}} / ndf = {red_chi2:.2f}"]
 
         if fit_func in ("gaus", "gaus+pol0", "gaus+pol1") and len(parameters) >= 3:
             mean    = parameters[1]
@@ -482,9 +482,9 @@ class FitFeature(Feature):
             const   = parameters[0]
             area    = const * sigma * _SQRT_2PI
             lines += [
-                f"Mean  = {mean:.3f} #pm {mean_e:.3f}",
-                f"#sigma    = {sigma:.3f} #pm {sigma_e:.3f}",
-                f"FWHM  = {fwhm:.3f}",
+                f"Mean  = {mean:.2f} #pm {mean_e:.2f}",
+                f"#sigma    = {sigma:.2f} #pm {sigma_e:.2f}",
+                f"FWHM  = {fwhm:.2f}",
                 f"Area  = {area:.0f}",
             ]
         elif fit_func in ("2gaus", "2gaus+pol1") and len(parameters) >= 6:
@@ -492,12 +492,12 @@ class FitFeature(Feature):
                 m = parameters[i * 3 + 1]
                 s = parameters[i * 3 + 2]
                 fwhm = _FWHM_TO_SIGMA * s
-                lines.append(f"{label}: {m:.3f}  FWHM={fwhm:.3f}")
+                lines.append(f"{label}: {m:.2f}  FWHM={fwhm:.2f}")
         else:
             names = FitFeature.get_param_display_names(fit_func)
             for i, p in enumerate(parameters[:4]):
                 e    = errors[i] if i < len(errors) else 0.0
                 name = names[i] if i < len(names) else f"p{i}"
-                lines.append(f"{name} = {p:.4g} #pm {e:.3g}")
+                lines.append(f"{name} = {p:.3g} #pm {e:.2g}")
 
         return "\n".join(lines)

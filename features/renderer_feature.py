@@ -71,6 +71,18 @@ class RootRenderer:
                                     func = fit_list.At(0)
                                     fit_list.Remove(func)
 
+                        # When a specific TF1 is provided, clear ALL attached
+                        # functions from the clone and draw only that one.
+                        # This ensures each fit preview shows its own curve.
+                        fit_func_obj = options.get("fit_func_obj")
+                        if fit_func_obj is not None:
+                            if hasattr(render_obj, "GetListOfFunctions"):
+                                try:
+                                    fl = render_obj.GetListOfFunctions()
+                                    fl.Clear()
+                                except Exception:
+                                    pass
+
                         try:
                             canvas.SetDPI(150)
                         except AttributeError:
@@ -79,6 +91,13 @@ class RootRenderer:
                         self._apply_options(root, canvas, render_obj, options)
 
                         render_obj.Draw()
+
+                        # Draw the per-fit TF1 curve after the histogram.
+                        if fit_func_obj is not None:
+                            try:
+                                fit_func_obj.Draw("same")
+                            except Exception:
+                                pass
 
                         try:
                             show_markers = options.get("show_markers", True)
@@ -129,19 +148,18 @@ class RootRenderer:
                             pass
 
                         # Optional TPaveText overlay (fit results on the canvas).
-                        # Placed in the lower-right corner so it sits in the
-                        # tail region and avoids covering the peak.
+                        # Placed in the top-right corner to avoid the peak data.
                         pavetext = options.get("pavetext")
                         if pavetext:
                             try:
-                                pave = root.TPaveText(0.52, 0.08, 0.97, 0.45, "NDC")
+                                pave = root.TPaveText(0.52, 0.60, 0.97, 0.97, "NDC")
                                 pave.SetFillColor(0)
                                 pave.SetFillStyle(1001)
                                 pave.SetFillColorAlpha(0, 0.75)  # semi-transparent
                                 pave.SetBorderSize(1)
                                 pave.SetTextAlign(12)
                                 pave.SetTextFont(42)
-                                pave.SetTextSize(0.055)
+                                pave.SetTextSize(0.042)
                                 for line in str(pavetext).split("\n"):
                                     pave.AddText(line if line.strip() else " ")
                                 pave.Draw()

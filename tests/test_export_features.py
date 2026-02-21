@@ -892,7 +892,7 @@ class TestFormatFitResultsShort(unittest.TestCase):
     def test_gaus_contains_mean(self):
         from features.fit_feature import FitFeature
         text = FitFeature.format_fit_results_short("gaus", self._cached_gaus())
-        self.assertIn("511.000", text)
+        self.assertIn("511.00", text)
 
     def test_gaus_contains_fwhm(self):
         from features.fit_feature import FitFeature
@@ -915,6 +915,81 @@ class TestFormatFitResultsShort(unittest.TestCase):
         text = FitFeature.format_fit_results_short("gaus", self._cached_gaus())
         # ROOT TLatex markup for chi^2 should be present
         self.assertIn("#chi", text)
+
+    def test_gaus_chi2_two_decimal_places(self):
+        from features.fit_feature import FitFeature
+        # chi2=3.0, ndf=2 → 1.5 → rendered as "1.50"
+        cached = {
+            "chi2": 3.0, "ndf": 2, "status": 0,
+            "parameters": [1000.0, 200.0, 2.0],
+            "errors": [10.0, 0.1, 0.05],
+        }
+        text = FitFeature.format_fit_results_short("gaus", cached)
+        self.assertIn("1.50", text)
+        # Mean=200.0, sigma=2.0 should each be formatted with 2 decimal places
+        self.assertIn("200.00", text)
+        self.assertIn("2.00", text)
+
+
+class TestRendererFitFuncObj(unittest.TestCase):
+    """Renderer clears clone functions and draws fit_func_obj when provided."""
+
+    def _make_root(self):
+        root = MagicMock()
+        canvas = MagicMock()
+        root.TCanvas.return_value = canvas
+        pave = MagicMock()
+        root.TPaveText.return_value = pave
+        return root
+
+    def test_fit_func_obj_drawn_same(self):
+        import sys
+        sys.modules.setdefault("ROOT", MagicMock())
+        from features.renderer_feature import RootRenderer
+
+        renderer = RootRenderer()
+        root = self._make_root()
+
+        func_list = MagicMock()
+        hist = MagicMock()
+        hist.GetName.return_value = "h"
+        hist.Clone.return_value = hist
+        hist.GetListOfFunctions.return_value = func_list
+
+        tf1 = MagicMock()
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            path = f.name
+        try:
+            renderer.render_to_file(root, hist, path, 400, 300, {"fit_func_obj": tf1})
+        except Exception:
+            pass
+        # The function list should have been cleared
+        func_list.Clear.assert_called()
+        # The TF1 should have been drawn with "same"
+        tf1.Draw.assert_called_with("same")
+
+    def test_no_fit_func_obj_skips_clear(self):
+        import sys
+        import tempfile
+        sys.modules.setdefault("ROOT", MagicMock())
+        from features.renderer_feature import RootRenderer
+
+        renderer = RootRenderer()
+        root = self._make_root()
+
+        func_list = MagicMock()
+        hist = MagicMock()
+        hist.GetName.return_value = "h"
+        hist.Clone.return_value = hist
+        hist.GetListOfFunctions.return_value = func_list
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            path = f.name
+        try:
+            renderer.render_to_file(root, hist, path, 400, 300, {})
+        except Exception:
+            pass
+        func_list.Clear.assert_not_called()
 
 
 if __name__ == "__main__":

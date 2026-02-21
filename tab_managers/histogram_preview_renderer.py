@@ -866,10 +866,11 @@ class HistogramPreviewRenderer:
         if state is None:
             return
 
-        fit_func = state.get("fit_func", "gaus")
-        energy   = state.get("energy")
-        width    = state.get("width") or 20.0
-        cached   = state.get("cached_results")
+        fit_func     = state.get("fit_func", "gaus")
+        energy       = state.get("energy")
+        width        = state.get("width") or 20.0
+        cached       = state.get("cached_results")
+        fit_func_obj = state.get("fit_func_obj")   # TF1 specific to this fit
 
         pavetext = None
         if cached and "error" not in cached:
@@ -897,6 +898,9 @@ class HistogramPreviewRenderer:
                     pass
             if pavetext:
                 preview_opts["pavetext"] = pavetext
+            # Pass the per-fit TF1 so the renderer draws only this curve.
+            if fit_func_obj is not None:
+                preview_opts["fit_func_obj"] = fit_func_obj
             pm.render_into_label_async(
                 root, clone, fit_label, options=preview_opts, delay_ms=80
             )
