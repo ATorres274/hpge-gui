@@ -121,6 +121,25 @@ class FitFeature(Feature):
             return (None, None)
 
     @staticmethod
+    def peak_sigma_mean(
+        fit_func: str,
+        params: list[float],
+    ) -> tuple[float | None, float | None]:
+        """Return ``(mean, sigma)`` for the primary Gaussian component.
+
+        For all supported ``gaus``-based models the first three parameters
+        are ``[amplitude, mean, sigma]``.  Returns ``(None, None)`` for
+        non-Gaussian models or if the parameter list is too short.
+        """
+        if fit_func.startswith("gaus") or fit_func.startswith("2gaus"):
+            if len(params) >= 3:
+                try:
+                    return float(params[1]), abs(float(params[2]))
+                except (TypeError, ValueError):
+                    pass
+        return None, None
+
+    @staticmethod
     def default_fit_params(
         fit_func: str,
         hist,

@@ -963,12 +963,13 @@ class TestRendererFitFuncObj(unittest.TestCase):
             renderer.render_to_file(root, hist, path, 400, 300, {"fit_func_obj": tf1})
         except Exception:
             pass
-        # The function list should have been cleared
-        func_list.Clear.assert_called()
+        # When fit_func_obj is provided the histogram is drawn with "HIST" to
+        # suppress auto-drawn attached functions; fl.Clear() is NOT called.
+        func_list.Clear.assert_not_called()
         # The TF1 should have been drawn with "same"
         tf1.Draw.assert_called_with("same")
 
-    def test_no_fit_func_obj_skips_clear(self):
+    def test_no_fit_func_obj_skips_hist_draw(self):
         import sys
         import tempfile
         sys.modules.setdefault("ROOT", MagicMock())
@@ -989,7 +990,55 @@ class TestRendererFitFuncObj(unittest.TestCase):
             renderer.render_to_file(root, hist, path, 400, 300, {})
         except Exception:
             pass
+        # Without fit_func_obj the histogram is drawn with default "" option
+        hist.Draw.assert_called_with("")
         func_list.Clear.assert_not_called()
+
+
+class TestPeakSigmaMean(unittest.TestCase):
+    """Tests for FitFeature.peak_sigma_mean."""
+
+    def setUp(self):
+        import sys
+        sys.modules.setdefault("ROOT", MagicMock())
+
+    def test_gaus_returns_mean_sigma(self):
+        from features.fit_feature import FitFeature
+        mean, sigma = FitFeature.peak_sigma_mean("gaus", [100.0, 511.0, 1.5])
+        self.assertAlmostEqual(mean, 511.0)
+        self.assertAlmostEqual(sigma, 1.5)
+
+    def test_gaus_pol1_returns_first_gaus(self):
+        from features.fit_feature import FitFeature
+        mean, sigma = FitFeature.peak_sigma_mean("gaus+pol1", [80.0, 1332.0, 2.1, 0.5, -0.001])
+        self.assertAlmostEqual(mean, 1332.0)
+        self.assertAlmostEqual(sigma, 2.1)
+
+    def test_sigma_absolute_value(self):
+        """Negative sigma from fit should be returned as positive."""
+        from features.fit_feature import FitFeature
+        mean, sigma = FitFeature.peak_sigma_mean("gaus", [50.0, 200.0, -1.8])
+        self.assertAlmostEqual(sigma, 1.8)
+
+    def test_non_gaussian_returns_none(self):
+        from features.fit_feature import FitFeature
+        mean, sigma = FitFeature.peak_sigma_mean("expo", [1.0, -0.001])
+        self.assertIsNone(mean)
+        self.assertIsNone(sigma)
+
+    def test_too_few_params_returns_none(self):
+        from features.fit_feature import FitFeature
+        mean, sigma = FitFeature.peak_sigma_mean("gaus", [100.0])
+        self.assertIsNone(mean)
+        self.assertIsNone(sigma)
+
+    def test_2gaus_returns_first_component(self):
+        from features.fit_feature import FitFeature
+        mean, sigma = FitFeature.peak_sigma_mean(
+            "2gaus", [80.0, 510.0, 1.4, 20.0, 514.0, 0.8]
+        )
+        self.assertAlmostEqual(mean, 510.0)
+        self.assertAlmostEqual(sigma, 1.4)
 
 
 if __name__ == "__main__":

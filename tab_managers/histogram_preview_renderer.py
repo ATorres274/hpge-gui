@@ -893,20 +893,43 @@ class HistogramPreviewRenderer:
         try:
             preview_opts: dict = {}
 
-            # Determine zoom window from the stored fit range (preferred) or
-            # fall back to energy ± width/2.
+            # Determine zoom window for the preview.
+            # Priority 1: if a Gaussian fit has completed, zoom to mean ± 3σ
+            #             (≈ 6σ total) so the peak fills the canvas neatly.
+            # Priority 2: stored fit xmin/xmax from when the fit was run.
+            # Priority 3: energy ± width/2 as a rough fall-back.
+            preview_xmin, preview_xmax = None, None
+
+            if cached and "parameters" in cached:
+                mean, sigma = FitFeature.peak_sigma_mean(
+                    fit_func, cached["parameters"]
+                )
+                if mean is not None and sigma is not None and sigma > 0:
+                    preview_xmin = mean - 3.0 * sigma
+                    preview_xmax = mean + 3.0 * sigma
+
+            if preview_xmin is None:
+                preview_xmin = state.get("xmin")
+                preview_xmax = state.get("xmax")
+
+            if preview_xmin is None and energy is not None:
+                try:
+                    preview_xmin = float(energy) - float(width) / 2.0
+                    preview_xmax = float(energy) + float(width) / 2.0
+                except Exception:
+                    pass
+
+            if preview_xmin is not None and preview_xmax is not None:
+                preview_opts["xmin"] = preview_xmin
+                preview_opts["xmax"] = preview_xmax
+
+            # xmin/xmax for TF1 construction: use the actual fit range so the
+            # curve is valid across the whole fit window.
             xmin = state.get("xmin")
             xmax = state.get("xmax")
-            if xmin is None and energy is not None:
-                try:
-                    xmin = float(energy) - float(width) / 2.0
-                    xmax = float(energy) + float(width) / 2.0
-                except Exception:
-                    xmin = xmax = None
-
-            if xmin is not None and xmax is not None:
-                preview_opts["xmin"] = xmin
-                preview_opts["xmax"] = xmax
+            if xmin is None:
+                xmin = preview_xmin
+                xmax = preview_xmax
 
             if pavetext:
                 preview_opts["pavetext"] = pavetext
