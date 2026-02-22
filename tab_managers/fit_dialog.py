@@ -18,6 +18,13 @@ from tkinter import ttk
 from modules.error_dispatcher import get_dispatcher, ErrorLevel
 from features.fit_feature import FitFeature, FIT_FUNCTIONS
 
+# Minimum pixel width for the left (controls) panel in the horizontal split.
+_LEFT_PANEL_MIN_PX: int = 320
+# Fraction of the dialog width given to the left panel at startup (~42 %).
+_LEFT_PANEL_RATIO: float = 0.42
+# Two fits are considered duplicates when their energies differ by less than this.
+_ENERGY_DEDUP_KEV: float = 1.0
+
 
 class FitDialog:
     """Non-modal dialog for interactive histogram fitting.
@@ -57,13 +64,20 @@ class FitDialog:
         self._fit_listbox: tk.Listbox | None = None
         self._fit_listbox_ids: list[int] = []
         self._fit_preview_label: tk.Label | None = None
+        self._result_text: tk.Text | None = None
+        self._no_fit_label: ttk.Label | None = None
+        self._h_paned: ttk.PanedWindow | None = None
+
+        # Counter for unique TF1 names to avoid ROOT name-collision errors.
+        self._preview_tf1_counter: int = 0
 
         # Build the Toplevel
         self._window = tk.Toplevel(parent)
         self._window.title("Fit Panel")
         self._window.resizable(True, True)
         self._window.protocol("WM_DELETE_WINDOW", self._on_close)
-        self._window.minsize(520, 360)
+        self._window.minsize(860, 500)
+        self._window.geometry("960x660")
 
         self._build_ui()
 
@@ -77,24 +91,56 @@ class FitDialog:
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        """Build the main layout: left controls | right preview."""
+        """Build the main layout: left (controls + results) | right (preview)."""
         main = ttk.Frame(self._window)
         main.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
 
-        # Horizontal split: controls (left) | preview (right)
-        paned = ttk.PanedWindow(main, orient=tk.HORIZONTAL)
-        paned.pack(fill=tk.BOTH, expand=True)
+        # Horizontal split: controls+results (left) | preview (right)
+        self._h_paned = ttk.PanedWindow(main, orient=tk.HORIZONTAL)
+        self._h_paned.pack(fill=tk.BOTH, expand=True)
 
-        # --- Left panel: fit list + controls ---
-        left = ttk.Frame(paned)
-        paned.add(left, weight=1)
-        self._build_controls(left)
+        # --- Left panel: controls above, fit results text below ---
+        left = ttk.Frame(self._h_paned)
+        self._h_paned.add(left, weight=1)
+
+        left_paned = ttk.PanedWindow(left, orient=tk.VERTICAL)
+        left_paned.pack(fill=tk.BOTH, expand=True)
+
+        controls_frame = ttk.Frame(left_paned)
+        left_paned.add(controls_frame, weight=2)
+        self._build_controls(controls_frame)
+
+        results_lf = ttk.LabelFrame(left_paned, text="Fit Results")
+        left_paned.add(results_lf, weight=1)
+        self._build_results_panel(results_lf)
 
         # --- Right panel: fit preview ---
-        right = ttk.Frame(paned)
-        paned.add(right, weight=2)
+        right = ttk.Frame(self._h_paned)
+        self._h_paned.add(right, weight=2)
         self._fit_preview_label = tk.Label(right, text="No fit yet", bg="white", fg="gray")
         self._fit_preview_label.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+
+        # After the window geometry is known, position the sash so the preview
+        # panel gets roughly 55 % of the width.
+        self._window.after(150, self._init_sash_position)
+
+    def _build_results_panel(self, parent: ttk.LabelFrame) -> None:
+        """Build the scrollable fit-results text widget inside *parent*."""
+        frame = ttk.Frame(parent)
+        frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+
+        sb = ttk.Scrollbar(frame, orient="vertical")
+        self._result_text = tk.Text(
+            frame,
+            wrap="word",
+            state="disabled",
+            height=8,
+            yscrollcommand=sb.set,
+            font=("TkFixedFont", 9),
+        )
+        sb.configure(command=self._result_text.yview)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._result_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
     def _build_controls(self, parent: ttk.Frame) -> None:
         """Build fit list and action buttons in *parent*."""
@@ -128,9 +174,28 @@ class FitDialog:
         ttk.Button(btn_row, text="Fit All Peaks",
                    command=self._fit_add_all_peaks).pack(side=tk.LEFT)
 
-        # Container for the active fit's control card
+        # Container for the active fit's control card; a placeholder label
+        # is shown when no fit is selected so the panel doesn't look empty.
         self._fit_container = ttk.Frame(parent)
         self._fit_container.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+
+        self._no_fit_label = ttk.Label(
+            self._fit_container,
+            text='Add a fit with "+ Fit" or "Fit All Peaks"',
+            foreground="gray",
+        )
+        self._no_fit_label.pack(anchor="center", pady=12)
+
+    def _init_sash_position(self) -> None:
+        """Position the horizontal sash so the preview gets ~55 % of the width."""
+        try:
+            w = self._window.winfo_width()
+            if w > 200:
+                self._h_paned.sashpos(
+                    0, max(_LEFT_PANEL_MIN_PX, int(w * _LEFT_PANEL_RATIO))
+                )
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Fit management (replaces _fit_* methods from renderer)
@@ -167,19 +232,50 @@ class FitDialog:
             self._fit_listbox.selection_set(idx)
             self._fit_listbox.see(idx)
 
+        # Hide the placeholder label once we have at least one fit.
+        try:
+            self._no_fit_label.pack_forget()
+        except Exception:
+            pass
+
         self._fit_show_frame(fit_id)
 
     def _fit_add_all_peaks(self) -> None:
-        """Create a fit for every detected peak using an estimated width."""
+        """Create fits for detected peaks that don't already have a fit.
+
+        Peaks whose energy is within ±``_ENERGY_DEDUP_KEV`` of an existing fit
+        are skipped so that clicking "Fit All Peaks" multiple times (or after
+        manually adding some fits) does not create duplicate entries.
+        """
         pf = self._peak_finder
         if pf is None or self._fit_module is None:
             return
+
+        # Collect energies of already-tracked fits to avoid duplicates.
+        # This list is also updated as new fits are added within the loop so
+        # that two peaks with similar energies in the same batch don't both
+        # get a fit added.
+        existing_energies: list[float] = []
+        for state in self._fit_module.get_all_fit_states().values():
+            e = state.get("energy")
+            if e is not None:
+                try:
+                    existing_energies.append(float(e))
+                except (TypeError, ValueError):
+                    pass
+
         for peak in list(pf.peaks):
             energy = peak.get("energy")
             if energy is None:
                 continue
+            energy_f = float(energy)
+            # Skip if a fit with similar energy already exists.
+            if any(abs(energy_f - e) < _ENERGY_DEDUP_KEV for e in existing_energies):
+                continue
             width = self._fit_module.estimate_peak_width(energy)
             self._fit_add(energy=energy, width=width)
+            # Register so subsequent peaks in the same batch are also deduplicated.
+            existing_energies.append(energy_f)
 
     def fit_add_all_peaks(self) -> None:
         """Public API: open and populate a fit for every detected peak."""
@@ -246,6 +342,13 @@ class FitDialog:
             new_idx = min(idx, new_count - 1)
             self._fit_listbox.selection_set(new_idx)
             self._fit_show_frame(self._fit_listbox_ids[new_idx])
+        else:
+            # No fits left — show the placeholder and clear the results text.
+            try:
+                self._no_fit_label.pack(anchor="center", pady=12)
+            except Exception:
+                pass
+            self._update_result_text_empty()
 
     def _fit_build_card(
         self,
@@ -347,6 +450,40 @@ class FitDialog:
     # Fit event handlers
     # ------------------------------------------------------------------
 
+    def _update_result_text(self, fit_id: int) -> None:
+        """Populate the results text widget with formatted results for *fit_id*."""
+        if self._result_text is None or self._fit_module is None:
+            return
+        state = self._fit_module.get_fit_state(fit_id)
+
+        if state is None:
+            text = "(no fit selected)"
+        else:
+            cached = state.get("cached_results")
+            fit_func = state.get("fit_func", "gaus")
+            fit_options = state.get("fit_options") or "SQ"
+            if cached is None:
+                text = "(fit not yet run — press Fit)"
+            else:
+                text = FitFeature.format_fit_results(fit_func, fit_options, cached)
+
+        try:
+            self._result_text.configure(state="normal")
+            self._result_text.delete("1.0", tk.END)
+            self._result_text.insert("1.0", text)
+            self._result_text.configure(state="disabled")
+        except Exception:
+            pass
+
+    def _update_result_text_empty(self) -> None:
+        """Clear the results text widget (no fit selected)."""
+        try:
+            self._result_text.configure(state="normal")
+            self._result_text.delete("1.0", tk.END)
+            self._result_text.configure(state="disabled")
+        except Exception:
+            pass
+
     def _on_fit_listbox_changed(self) -> None:
         if self._fit_module is None or self._fit_listbox is None:
             return
@@ -370,6 +507,7 @@ class FitDialog:
                 self._fit_listbox.see(idx)
             except (ValueError, AttributeError):
                 pass
+        self._update_result_text(fit_id)
         self._render_fit_preview(fit_id)
 
     def _fit_on_func_changed(self, ui_state: dict) -> None:
@@ -453,7 +591,14 @@ class FitDialog:
         self._fit_module.perform_fit(fit_id, root)
 
     def _render_fit_preview(self, fit_id: int) -> None:
-        """Render (or re-render) the zoomed fit preview for *fit_id*."""
+        """Render (or re-render) the zoomed fit preview for *fit_id*.
+
+        Uses a unique TF1 name on every call (via ``_preview_tf1_counter``) to
+        prevent ROOT name-collision errors when the same fit is re-rendered.
+        The preview always uses a linear Y scale so the Gaussian curve shape
+        is visible; the pavetext overlay is not shown here (results go to the
+        text widget instead).
+        """
         if self._fit_module is None:
             return
         state = self._fit_module.get_fit_state(fit_id)
@@ -464,10 +609,6 @@ class FitDialog:
         energy   = state.get("energy")
         width    = state.get("width") or 20.0
         cached   = state.get("cached_results")
-
-        pavetext = None
-        if cached and "error" not in cached:
-            pavetext = FitFeature.format_fit_results_short(fit_func, cached)
 
         pm        = self._preview_manager
         fit_label = self._fit_preview_label
@@ -480,10 +621,15 @@ class FitDialog:
             return
 
         try:
-            preview_opts: dict = {}
+            preview_opts: dict = {
+                # Linear Y scale for fit previews — shows Gaussian shape clearly.
+                "logy": False,
+                "show_markers": False,
+            }
             preview_xmin, preview_xmax = None, None
 
-            if cached and "parameters" in cached:
+            # Priority 1: zoom to mean ± 4σ when we have fitted parameters.
+            if cached and "parameters" in cached and "error" not in cached:
                 mean, sigma = FitFeature.peak_sigma_mean(
                     fit_func, cached["parameters"]
                 )
@@ -491,14 +637,17 @@ class FitDialog:
                     preview_xmin = mean - 4.0 * sigma
                     preview_xmax = mean + 4.0 * sigma
 
+            # Priority 2: use stored fit xmin/xmax.
             if preview_xmin is None:
                 preview_xmin = state.get("xmin")
                 preview_xmax = state.get("xmax")
 
+            # Priority 3: energy ± width/2 (pre-fit estimate).
             if preview_xmin is None and energy is not None:
                 try:
-                    preview_xmin = float(energy) - float(width) / 2.0
-                    preview_xmax = float(energy) + float(width) / 2.0
+                    half_w = float(width) / 2.0
+                    preview_xmin = float(energy) - half_w
+                    preview_xmax = float(energy) + half_w
                 except Exception:
                     pass
 
@@ -506,20 +655,17 @@ class FitDialog:
                 preview_opts["xmin"] = preview_xmin
                 preview_opts["xmax"] = preview_xmax
 
-            xmin = state.get("xmin")
-            xmax = state.get("xmax")
-            if xmin is None:
-                xmin = preview_xmin
-                xmax = preview_xmax
+            # TF1 range: use fit range when available, else fall back to zoom.
+            tf1_xmin = state.get("xmin") or preview_xmin
+            tf1_xmax = state.get("xmax") or preview_xmax
 
-            if pavetext:
-                preview_opts["pavetext"] = pavetext
-
-            if cached and "parameters" in cached and xmin is not None:
+            if cached and "parameters" in cached and "error" not in cached and tf1_xmin is not None:
                 try:
-                    formula  = FitFeature.get_fit_formula(fit_func)
-                    tf1_name = f"_dlg_preview_tf1_{fit_id}"
-                    fresh_tf1 = root.TF1(tf1_name, formula, xmin, xmax)
+                    formula = FitFeature.get_fit_formula(fit_func)
+                    # Use a unique name on every call to avoid ROOT name conflicts.
+                    self._preview_tf1_counter += 1
+                    tf1_name = f"_dlg_tf1_{fit_id}_{self._preview_tf1_counter}"
+                    fresh_tf1 = root.TF1(tf1_name, formula, tf1_xmin, tf1_xmax)
                     try:
                         fresh_tf1.SetNpx(500)
                     except Exception:
@@ -543,6 +689,7 @@ class FitDialog:
 
     def _on_fit_completed(self, fit_id: int, cached: dict) -> None:
         """Called by FitModule after a fit completes."""
+        self._update_result_text(fit_id)
         self._render_fit_preview(fit_id)
         # Forward to the renderer so the main histogram preview updates too
         if self._external_on_fit_completed is not None:
