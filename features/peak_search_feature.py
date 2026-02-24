@@ -56,10 +56,40 @@ class PeakSearchAutomatic(Feature):
             try:
                 spectrum = root.TSpectrum()
                 n = spectrum.Search(hist, float(sigma), "")
+                # TSpectrum may attach a TPolyMarker (markers) to the
+                # histogram's function list. Remove any such objects so
+                # we don't rely on ROOT's drawing — rendering should be
+                # handled centrally by our RendererFeature.
+                try:
+                    func_list = None
+                    if hasattr(hist, "GetListOfFunctions"):
+                        func_list = hist.GetListOfFunctions()
+                    if func_list is not None:
+                        to_remove = []
+                        for j in range(func_list.GetSize()):
+                            try:
+                                obj = func_list.At(j)
+                                if obj and obj.ClassName() == "TPolyMarker":
+                                    to_remove.append(obj)
+                            except Exception:
+                                pass
+                        for obj in to_remove:
+                            try:
+                                func_list.Remove(obj)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
                 peaks: List[dict] = []
+                # Parameters for local background test: number of bins taken
+                # on each side of the candidate peak and sigma threshold.
+                BG_SIDE_BINS = 5
+                BG_SIGMA_THRESHOLD = 3.0
+
                 for i in range(n):
                     energy = float(spectrum.GetPositionX()[i])
-                    counts = float(hist.GetBinContent(hist.FindBin(energy)))
+                    peak_bin = hist.FindBin(energy)
+                    counts = float(hist.GetBinContent(peak_bin))
 
                     # Energy window filter
                     if energy_min is not None and energy < energy_min:
@@ -70,6 +100,32 @@ class PeakSearchAutomatic(Feature):
                     # Minimum count threshold
                     if counts < threshold_counts:
                         continue
+
+                    # Estimate local background using BG_SIDE_BINS on each side
+                    nbins = hist.GetNbinsX()
+                    bg_values: list[float] = []
+                    # left side
+                    for b in range(max(1, peak_bin - BG_SIDE_BINS), peak_bin):
+                        try:
+                            bg_values.append(float(hist.GetBinContent(b)))
+                        except Exception:
+                            pass
+                    # right side
+                    for b in range(peak_bin + 1, min(nbins + 1, peak_bin + BG_SIDE_BINS + 1)):
+                        try:
+                            bg_values.append(float(hist.GetBinContent(b)))
+                        except Exception:
+                            pass
+
+                    # If we have background samples, require the peak to be
+                    # significantly above background (BG_SIGMA_THRESHOLD * sqrt(bg)).
+                    if bg_values:
+                        bg_avg = float(sum(bg_values)) / float(len(bg_values))
+                        # Poisson-like noise estimate; enforce a minimum noise floor
+                        bg_noise = max(1.0, bg_avg ** 0.5)
+                        if counts <= bg_avg + BG_SIGMA_THRESHOLD * bg_noise:
+                            # Peak is consistent with background — ignore it.
+                            continue
 
                     peaks.append({"energy": energy, "counts": counts, "source": "automatic"})
 

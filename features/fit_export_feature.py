@@ -440,7 +440,7 @@ class FitExportFeature(Feature):
             pass
 
         energy       = state.get("energy")
-        width        = state.get("width") or 20.0
+        width        = state.get("width") or 10.0
         fit_func     = state.get("fit_func", "gaus")
         fit_options  = state.get("fit_options", "SQ")
         cached       = state.get("cached_results", {})
@@ -449,8 +449,9 @@ class FitExportFeature(Feature):
         # Compute zoomed window
         try:
             if energy is not None:
-                xmin = float(energy) - float(width) / 2.0
-                xmax = float(energy) + float(width) / 2.0
+                # `width` is a half-range (±width). Use it directly.
+                xmin = float(energy) - float(width)
+                xmax = float(energy) + float(width)
             else:
                 xax  = hist.GetXaxis() if hasattr(hist, "GetXaxis") else None
                 xmin = float(xax.GetXmin()) if xax else 0.0

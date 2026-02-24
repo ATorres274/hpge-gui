@@ -77,7 +77,17 @@ class FitDialog:
         self._window.resizable(True, True)
         self._window.protocol("WM_DELETE_WINDOW", self._on_close)
         self._window.minsize(860, 500)
-        self._window.geometry("960x660")
+        # Start maximized so the dialog uses available screen space.
+        try:
+            self._window.geometry("1280x720")
+            # Use the Tk 'zoomed' state to maximize on most platforms.
+            try:
+                self._window.state("zoomed")
+            except Exception:
+                # Fallback: leave the explicit geometry if 'zoomed' isn't supported.
+                pass
+        except Exception:
+            pass
 
         self._build_ui()
 
@@ -111,7 +121,8 @@ class FitDialog:
         self._build_controls(controls_frame)
 
         results_lf = ttk.LabelFrame(left_paned, text="Fit Results")
-        left_paned.add(results_lf, weight=1)
+        # Give the results panel more vertical space by increasing its weight.
+        left_paned.add(results_lf, weight=2)
         self._build_results_panel(results_lf)
 
         # --- Right panel: fit preview ---
@@ -134,9 +145,10 @@ class FitDialog:
             frame,
             wrap="word",
             state="disabled",
-            height=8,
+            # Larger, more readable results area for detailed fit output.
+            height=18,
             yscrollcommand=sb.set,
-            font=("TkFixedFont", 9),
+            font=("TkFixedFont", 13),
         )
         sb.configure(command=self._result_text.yview)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
@@ -168,11 +180,9 @@ class FitDialog:
         btn_row = ttk.Frame(parent)
         btn_row.pack(fill=tk.X, pady=(4, 0))
         ttk.Button(btn_row, text="+ Fit",
-                   command=self._fit_add).pack(side=tk.LEFT, padx=(0, 2))
+               command=self._fit_add).pack(side=tk.LEFT, padx=(0, 2))
         ttk.Button(btn_row, text="Remove",
-                   command=self._fit_remove_selected).pack(side=tk.LEFT, padx=(0, 2))
-        ttk.Button(btn_row, text="Fit All Peaks",
-                   command=self._fit_add_all_peaks).pack(side=tk.LEFT)
+               command=self._fit_remove_selected).pack(side=tk.LEFT, padx=(0, 2))
 
         # Container for the active fit's control card; a placeholder label
         # is shown when no fit is selected so the panel doesn't look empty.
@@ -272,7 +282,7 @@ class FitDialog:
             # Skip if a fit with similar energy already exists.
             if any(abs(energy_f - e) < _ENERGY_DEDUP_KEV for e in existing_energies):
                 continue
-            width = self._fit_module.estimate_peak_width(energy)
+            width = peak.get("width")
             self._fit_add(energy=energy, width=width)
             # Register so subsequent peaks in the same batch are also deduplicated.
             existing_energies.append(energy_f)
@@ -286,7 +296,7 @@ class FitDialog:
         fit_id: int,
         ui_state: dict,
         energy: float,
-        width: float | None,
+        width: float | int = 20,
     ) -> None:
         """Pre-fill parameter entries with seed values from FitFeature."""
         if self._fit_module is None:
@@ -298,11 +308,16 @@ class FitDialog:
         )
         width_val = (
             width if (width is not None and width > 0)
-            else self._fit_module.estimate_peak_width(energy)
+            else 20
         )
+        try:
+            # Ensure the UI's width entry reflects the seed value used.
+            ui_state["width_var"].set(f"{width_val}")
+        except Exception:
+            pass
         xmin, xmax = FitFeature.get_fit_range(energy, width_val)
         if xmin is None:
-            xmin, xmax = energy - width_val / 2.0, energy + width_val / 2.0
+            xmin, xmax = energy - width_val, energy + width_val
         params = FitFeature.default_fit_params(
             fit_func, hist_clone, energy, width_val, xmin, xmax
         )
@@ -359,13 +374,13 @@ class FitDialog:
     ) -> dict:
         """Build compact per-fit controls inside *card* and return ui_state."""
         ui_state: dict = {
-            "fit_func_var":     tk.StringVar(value="gaus"),
+            "fit_func_var":     tk.StringVar(value="gaus+pol1"),
             "fit_options_var":  tk.StringVar(value="SQ"),
             "energy_var":       tk.StringVar(
                 value=f"{energy:.2f}" if energy is not None else ""
             ),
             "width_var":        tk.StringVar(
-                value=str(width) if width is not None else ""
+                value=str(width) if width is not None else "20"
             ),
             "param_entries":    [],
             "param_fixed_vars": [],
@@ -399,10 +414,6 @@ class FitDialog:
             row0, text="Fit",
             command=lambda fid=fit_id: self._fit_trigger(fid),
         ).pack(side=tk.LEFT, padx=(0, 2))
-        ttk.Button(
-            row0, text="Refit",
-            command=lambda fid=fit_id: self._fit_trigger(fid),
-        ).pack(side=tk.LEFT)
 
         params_frame = ttk.LabelFrame(card, text="Initial Parameters (gaus)")
         params_frame.pack(fill=tk.X, pady=(2, 1))
@@ -607,7 +618,7 @@ class FitDialog:
 
         fit_func = state.get("fit_func", "gaus")
         energy   = state.get("energy")
-        width    = state.get("width") or 20.0
+        width    = state.get("width") or 10.0
         cached   = state.get("cached_results")
 
         pm        = self._preview_manager
@@ -628,28 +639,31 @@ class FitDialog:
             }
             preview_xmin, preview_xmax = None, None
 
-            # Priority 1: zoom to mean ± 4σ when we have fitted parameters.
-            if cached and "parameters" in cached and "error" not in cached:
-                mean, sigma = FitFeature.peak_sigma_mean(
-                    fit_func, cached["parameters"]
-                )
+            # Prefer an explicit stored fit window when available.
+            stored_xmin = state.get("xmin")
+            stored_xmax = state.get("xmax")
+            if stored_xmin is not None and stored_xmax is not None:
+                preview_xmin = stored_xmin
+                preview_xmax = stored_xmax
+
+            # Next preference: use the UI-specified width centered on the
+            # peak energy so the preview remains consistent regardless of
+            # whether the fit succeeded or failed.
+            if (preview_xmin is None or preview_xmax is None) and energy is not None:
+                try:
+                    wval = float(state.get("width") if state.get("width") is not None else width)
+                    preview_xmin = float(energy) - wval
+                    preview_xmax = float(energy) + wval
+                except Exception:
+                    pass
+
+            # Fallback: if no stored/windowed width is available, zoom to
+            # mean ± 4σ only when the fit produced valid parameters.
+            if (preview_xmin is None or preview_xmax is None) and cached and "parameters" in cached and "error" not in cached:
+                mean, sigma = FitFeature.peak_sigma_mean(fit_func, cached["parameters"])
                 if mean is not None and sigma is not None and sigma > 0:
                     preview_xmin = mean - 4.0 * sigma
                     preview_xmax = mean + 4.0 * sigma
-
-            # Priority 2: use stored fit xmin/xmax.
-            if preview_xmin is None:
-                preview_xmin = state.get("xmin")
-                preview_xmax = state.get("xmax")
-
-            # Priority 3: energy ± width/2 (pre-fit estimate).
-            if preview_xmin is None and energy is not None:
-                try:
-                    half_w = float(width) / 2.0
-                    preview_xmin = float(energy) - half_w
-                    preview_xmax = float(energy) + half_w
-                except Exception:
-                    pass
 
             if preview_xmin is not None and preview_xmax is not None:
                 preview_opts["xmin"] = preview_xmin
