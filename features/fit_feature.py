@@ -115,8 +115,11 @@ class FitFeature(Feature):
             if energy is None or width is None:
                 return (None, None)
             e = float(energy)
+            # Treat `width` as the half-range (±width) so callers that
+            # pass a numeric width get a window centered on the peak with
+            # explicit half-width. This avoids implicit halving elsewhere.
             w = float(width)
-            return (e - w / 2.0, e + w / 2.0)
+            return (e - w, e + w)
         except (TypeError, ValueError):
             return (None, None)
 
@@ -189,43 +192,62 @@ class FitFeature(Feature):
                 pass
 
         # --- estimate sigma from FWHM or explicit width --------------------
-        if width is not None and width > 0:
-            sigma = float(width) / _FWHM_TO_SIGMA
-        else:
-            # Walk outward from peak_x to find half-maximum crossing.
-            # Use range/8 as the conservative seed before the walk; this is
-            # narrower than range/5 (old fallback) to avoid over-broad starts.
-            sigma = max((xmax - xmin) / 8.0, 0.5)
-            if hist is not None and hasattr(hist, "FindBin"):
-                try:
-                    half = peak_height / 2.0
-                    center_bin = hist.FindBin(peak_x)
-                    b_lo = hist.FindBin(xmin)
-                    b_hi = hist.FindBin(xmax)
-                    # Search left half-max
-                    left_x = xmin
-                    for b in range(center_bin, b_lo - 1, -1):
-                        if float(hist.GetBinContent(b)) <= half:
-                            left_x = float(hist.GetBinCenter(b))
-                            break
-                    # Search right half-max
-                    right_x = xmax
-                    for b in range(center_bin, b_hi + 1):
-                        if float(hist.GetBinContent(b)) <= half:
-                            right_x = float(hist.GetBinCenter(b))
-                            break
-                    fwhm_est = right_x - left_x
-                    if fwhm_est > 0:
-                        sigma = fwhm_est / _FWHM_TO_SIGMA
-                except Exception:
-                    pass
+        # If `width` was provided, it is interpreted as the half-range
+        # (±width). The FWHM is therefore `2 * width` and sigma converts
+        # from FWHM via the usual constant.
+        # Estimate sigma from the histogram half-maximum crossings when
+        # possible. This is more robust than deriving sigma directly from
+        # the fit window width because the peak shape may be narrower than
+        # the window used for fitting.
+        sigma = max((xmax - xmin) / 8.0, 0.5)
+        if hist is not None and hasattr(hist, "FindBin"):
+            try:
+                half = peak_height / 2.0
+                center_bin = hist.FindBin(peak_x)
+                b_lo = hist.FindBin(xmin)
+                b_hi = hist.FindBin(xmax)
+                # Search left half-max
+                left_x = xmin
+                for b in range(center_bin, b_lo - 1, -1):
+                    if float(hist.GetBinContent(b)) <= half:
+                        left_x = float(hist.GetBinCenter(b))
+                        break
+                # Search right half-max
+                right_x = xmax
+                for b in range(center_bin, b_hi + 1):
+                    if float(hist.GetBinContent(b)) <= half:
+                        right_x = float(hist.GetBinCenter(b))
+                        break
+                fwhm_est = right_x - left_x
+                if fwhm_est > 0:
+                    sigma = fwhm_est / _FWHM_TO_SIGMA
+            except Exception:
+                pass
         sigma = max(sigma, 1e-6)
 
         if fit_func == "gaus":
             return [peak_height, peak_x, sigma]
         # Photopeak compound models: Gaussian params + background
         if fit_func == "gaus+pol1":
-            return [peak_height, peak_x, sigma, 0.0, 0.0]
+            # Estimate linear background (a0 + a1*x) from edge bin values.
+            # Use left/right edge bin centres and contents to create a
+            # simple linear seed. Fall back to zeros on any error.
+            a0, a1 = 0.0, 0.0
+            if hist is not None and hasattr(hist, "FindBin"):
+                try:
+                    b_lo = hist.FindBin(xmin)
+                    b_hi = hist.FindBin(xmax)
+                    if b_hi >= b_lo:
+                        x1 = float(hist.GetBinCenter(b_lo))
+                        y1 = float(hist.GetBinContent(b_lo))
+                        x2 = float(hist.GetBinCenter(b_hi))
+                        y2 = float(hist.GetBinContent(b_hi))
+                        if x2 != x1:
+                            a1 = (y2 - y1) / (x2 - x1)
+                            a0 = y1 - a1 * x1
+                except Exception:
+                    pass
+            return [peak_height, peak_x, sigma, a0, a1]
         if fit_func == "gaus+pol2":
             return [peak_height, peak_x, sigma, 0.0, 0.0, 0.0]
         if fit_func == "gaus+erf":

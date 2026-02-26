@@ -68,11 +68,6 @@ class FitModule:
         """Store *peaks* (plain dicts from the histogram tab peak finder)."""
         self.detected_peaks = list(peaks or [])
 
-    @staticmethod
-    def estimate_peak_width(energy: float) -> float:
-        """Estimate a sensible fit window width: 5 % of *energy*, ≥ 10 keV."""
-        return max(energy * 0.05, 10.0)
-
     # ------------------------------------------------------------------
     # Fit state management
     # ------------------------------------------------------------------
@@ -88,7 +83,7 @@ class FitModule:
         fit_id = self._fit_count
         self._fit_states[fit_id] = {
             "fit_id": fit_id,
-            "fit_func": "gaus",
+            "fit_func": "gaus+pol1",
             "fit_options": "SQ",
             "energy": energy,
             "width": width,
@@ -173,7 +168,7 @@ class FitModule:
         if self.current_hist_clone is None:
             self.current_hist_clone = FitFeature.clone_histogram(self.current_hist)
 
-        fit_func = state.get("fit_func", "gaus")
+        fit_func = state.get("fit_func", "gaus+pol1")
         fit_options = state.get("fit_options") or "SQ"
         energy = state.get("energy")
         width = state.get("width")
@@ -190,6 +185,19 @@ class FitModule:
         default_xmax = float(xaxis.GetXmax()) if xaxis and hasattr(xaxis, "GetXmax") else 10000.0
         xmin = fit_range[0] if fit_range[0] is not None else default_xmin
         xmax = fit_range[1] if fit_range[1] is not None else default_xmax
+
+        # Override stored fit window to always center on the peak energy
+        # and span ±width when the UI supplied a width. Treat *width* as
+        # the half-range for preview/fitting window (default behavior when
+        # a user expects +/- width). If width is not provided, fall back
+        # to the computed fit_range above.
+        if energy is not None and width is not None:
+            try:
+                wval = float(width)
+                xmin = float(energy) - wval
+                xmax = float(energy) + wval
+            except Exception:
+                pass
 
         if not params:
             params = FitFeature.default_fit_params(

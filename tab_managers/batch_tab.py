@@ -268,6 +268,29 @@ class BatchProcessingTab(Tab):
 			# Find peaks using TSpectrum
 			spectrum = root.TSpectrum()
 			num_peaks = spectrum.Search(hist, 2, "")  # 2 sigma, quiet
+			# Remove any TPolyMarker objects TSpectrum may have attached
+			# to the histogram so that drawing is performed only via our
+			# centralized renderer (which uses options->markers).
+			try:
+				func_list = None
+				if hasattr(hist, "GetListOfFunctions"):
+					func_list = hist.GetListOfFunctions()
+				if func_list is not None:
+					to_remove = []
+					for j in range(func_list.GetSize()):
+						try:
+							obj = func_list.At(j)
+							if obj and obj.ClassName() == "TPolyMarker":
+								to_remove.append(obj)
+						except Exception:
+							pass
+					for obj in to_remove:
+						try:
+							func_list.Remove(obj)
+						except Exception:
+							pass
+			except Exception:
+				pass
 
 			peaks = []
 			for i in range(num_peaks):
